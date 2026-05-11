@@ -6,6 +6,7 @@ Small FastAPI application for testing common request types and parsing PortalDA 
 - `GET /search?query=<text>&limit=<number>` — GET request with query parameters.
 - `POST /items` — POST request with a JSON body.
 - `POST /portalda/parse` — accepts a PortalDA listing URL and returns parsed listing data.
+- `POST /avito/parse` — accepts Avito search parameters and returns parsed listing data.
 
 ## Run locally
 
@@ -43,3 +44,31 @@ curl -X POST http://127.0.0.1:8000/portalda/parse \
 ```
 
 The response contains the original URL, title, price, address, description, seller, object parameters, image URLs, and an optional `error` field when parsing fails after retries.
+
+Parse Avito listings by search parameters:
+
+JSON body for testing `POST /avito/parse`:
+
+```json
+{
+  "city": "moskva",
+  "search_query": "склад",
+  "price_min": 8000000,
+  "price_max": 15000000,
+  "max_items": 20,
+  "max_pages": 3,
+  "category": "nedvizhimost",
+  "headless": true,
+  "save_html": true
+}
+```
+
+The same payload is available in `examples/avito_parse_request.json`, so you can test it with curl:
+
+```bash
+curl -X POST http://127.0.0.1:8000/avito/parse \
+  -H "Content-Type: application/json" \
+  --data @examples/avito_parse_request.json
+```
+
+The response is an array of listings with URL, title, price, address, description, seller, parsed parameters, image URLs, and optional raw HTML path. If Avito does not render listing links, the API returns `502` with a `detail` message that includes the last search URL and a possible reason such as a captcha, access restriction, or unexpected page content.

@@ -1,0 +1,11 @@
+{
+  "city": "moskva",
+  "search_query": "склад",
+  "price_min": 8000000,
+  "price_max": 15000000,
+  "max_items": 20,
+  "max_pages": 3,
+  "category": "nedvizhimost",
+  "headless": true,
+  "save_html": true
+}
