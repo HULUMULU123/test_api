@@ -1,12 +1,12 @@
 from typing import Annotated
 
 from fastapi import FastAPI, Query, status
-from pydantic import BaseModel, Field
+from pydantic import AnyHttpUrl, BaseModel, Field
 
 
 app = FastAPI(
     title="Test Methods API",
-    description="A small FastAPI application for testing GET, GET with query parameters, and POST requests.",
+    description="A small FastAPI application with test endpoints and a PortalDA parsing endpoint.",
     version="0.1.0",
 )
 
@@ -19,6 +19,22 @@ class ItemCreate(BaseModel):
 
 class ItemResponse(ItemCreate):
     id: int
+
+
+class PortaldaParseRequest(BaseModel):
+    url: AnyHttpUrl = Field(..., examples=["https://portal-da.ru/object/example"])
+
+
+class PortaldaParseResponse(BaseModel):
+    url: str
+    title: str
+    price: int
+    address: str
+    description: str
+    seller: str
+    params: dict[str, str]
+    image_urls: list[str]
+    error: str | None = None
 
 
 @app.get("/", summary="Simple GET endpoint")
@@ -44,3 +60,11 @@ def search_items(
 def create_item(item: ItemCreate) -> ItemResponse:
     """Return the posted payload with a generated test ID."""
     return ItemResponse(id=1, **item.model_dump())
+
+
+@app.post("/portalda/parse", response_model=PortaldaParseResponse, summary="Parse PortalDA card")
+def parse_portalda(payload: PortaldaParseRequest) -> dict:
+    """Parse a PortalDA card URL and return extracted listing data."""
+    from app.portalda_parser import parse_portalda_card
+
+    return parse_portalda_card(str(payload.url))
