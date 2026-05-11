@@ -1,6 +1,7 @@
 import hashlib
 import json
 import logging
+import os
 import random
 import re
 import time
@@ -89,6 +90,21 @@ def parse_price(value: str | None) -> int | None:
         return None
 
     return int(digits)
+
+
+def resolve_browser_headless(headless: bool) -> bool:
+    if headless:
+        return True
+
+    has_display = os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")
+    if os.name == "posix" and not has_display:
+        logger.warning(
+            "Headed browser was requested, but no X server/DISPLAY is available. "
+            "Launching Chromium in headless mode. Use xvfb-run or set DISPLAY to run headed."
+        )
+        return True
+
+    return False
 
 
 def safe_filename_from_url(url: str) -> str:
@@ -521,7 +537,7 @@ def parse_avito_realty(
 
     with sync_playwright() as p:
         browser = p.chromium.launch(
-            headless=headless,
+            headless=resolve_browser_headless(headless),
             args=[
                 "--disable-blink-features=AutomationControlled",
             ],

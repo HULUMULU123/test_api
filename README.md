@@ -63,6 +63,8 @@ JSON body for testing `POST /avito/parse`:
 }
 ```
 
+For production servers without an X server, keep `headless` set to `true`. Use `headless: false` only on a machine with a display or when running through `xvfb-run`.
+
 The same payload is available in `examples/avito_parse_request.json`, so you can test it with curl:
 
 ```bash
