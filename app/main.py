@@ -1,6 +1,6 @@
 from typing import Annotated
 
-from fastapi import FastAPI, Query, status
+from fastapi import FastAPI, HTTPException, Query, status
 from pydantic import AnyHttpUrl, BaseModel, Field, model_validator
 
 
@@ -161,14 +161,20 @@ def parse_avito(payload: AvitoParseRequest) -> list[dict]:
     """Parse Avito search results by city, query, price range, category, and limits."""
     from app.avito_parser import parse_avito_realty
 
-    return parse_avito_realty(
-        price_min=payload.price_min,
-        price_max=payload.price_max,
-        city=payload.city,
-        search_query=payload.search_query,
-        max_items=payload.max_items,
-        max_pages=payload.max_pages,
-        category=payload.category,
-        headless=payload.headless,
-        save_html=payload.save_html,
-    )
+    try:
+        return parse_avito_realty(
+            price_min=payload.price_min,
+            price_max=payload.price_max,
+            city=payload.city,
+            search_query=payload.search_query,
+            max_items=payload.max_items,
+            max_pages=payload.max_pages,
+            category=payload.category,
+            headless=payload.headless,
+            save_html=payload.save_html,
+        )
+    except RuntimeError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=str(exc),
+        ) from exc

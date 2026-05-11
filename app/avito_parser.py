@@ -10,7 +10,7 @@ from pathlib import Path
 from urllib.parse import urlencode, urljoin, urlparse
 
 from bs4 import BeautifulSoup
-from playwright.sync_api import Page, sync_playwright
+from playwright.sync_api import Page, TimeoutError as PlaywrightTimeoutError, sync_playwright
 
 
 AVITO_BASE_URL = "https://www.avito.ru"
@@ -126,6 +126,17 @@ def build_search_url(
 
 
 class AvitoCrawler:
+    listing_wait_selector = ", ".join(
+        [
+            "div[data-marker='item']",
+            "[data-marker='item']",
+            "a[data-marker='item-title']",
+            "a[data-marker='item/link']",
+            "a[itemprop='url']",
+            "a[href*='_']",
+        ]
+    )
+
     def __init__(
         self,
         page: Page,
@@ -149,6 +160,7 @@ class AvitoCrawler:
     def collect_listing_urls(self) -> list[str]:
         result = []
         seen = set()
+        processed_pages = []
 
         for page_num in range(1, self.max_pages + 1):
             if len(result) >= self.max_cards:
@@ -166,6 +178,7 @@ class AvitoCrawler:
 
             try:
                 html = self._load_search_page(search_url)
+                processed_pages.append((search_url, html))
                 urls = self._extract_listing_urls(html)
                 logger.info("Found %s URLs on page %s", len(urls), page_num)
 
@@ -181,19 +194,40 @@ class AvitoCrawler:
 
             random_delay()
 
+        if not result:
+            reason = self._build_empty_result_message(processed_pages)
+            raise RuntimeError(reason)
+
         return result[: self.max_cards]
 
     @retryable
     def _load_search_page(self, url: str) -> str:
         self.page.goto(url, wait_until="domcontentloaded", timeout=60_000)
-        self.page.wait_for_timeout(2500)
 
         try:
-            self.page.wait_for_selector("a[href*='_']", timeout=10_000)
-        except Exception:
-            logger.warning("No listing links found, continue with page content")
+            self.page.wait_for_load_state("networkidle", timeout=15_000)
+        except PlaywrightTimeoutError:
+            logger.info("Search page did not reach networkidle: %s", url)
+
+        self._scroll_search_page()
+
+        try:
+            self.page.wait_for_selector(self.listing_wait_selector, timeout=15_000)
+        except PlaywrightTimeoutError:
+            logger.warning(
+                "No listing links found with selectors, continue with page content: %s",
+                url,
+            )
 
         return self.page.content()
+
+    def _scroll_search_page(self) -> None:
+        for y in [0, 600, 1200, 1800, 2400]:
+            self.page.evaluate("y => window.scrollTo(0, y)", y)
+            self.page.wait_for_timeout(400)
+
+        self.page.evaluate("window.scrollTo(0, 0)")
+        self.page.wait_for_timeout(500)
 
     def _extract_listing_urls(self, html: str) -> list[str]:
         soup = BeautifulSoup(html, "html.parser")
@@ -201,8 +235,10 @@ class AvitoCrawler:
         seen = set()
         selectors = [
             "a[data-marker='item-title']",
+            "a[data-marker='item/link']",
             "a[itemprop='url']",
             "div[data-marker='item'] a[href]",
+            "[data-marker='item'] a[href]",
             "a[href*='_']",
         ]
 
@@ -220,9 +256,34 @@ class AvitoCrawler:
             if urls:
                 break
 
+        if not urls:
+            urls.extend(self._extract_listing_urls_from_text(html, seen))
+
+        return urls
+
+    def _extract_listing_urls_from_text(self, html: str, seen: set[str]) -> list[str]:
+        urls = []
+        decoded_html = (
+            html.replace("\\u002F", "/")
+            .replace("\\/", "/")
+            .replace("&quot;", '"')
+            .replace("&amp;", "&")
+        )
+        pattern = re.compile(
+            r"(?:https?://www\.avito\.ru)?/[A-Za-zА-Яа-я0-9_./%-]+_\d+",
+            flags=re.IGNORECASE,
+        )
+
+        for match in pattern.finditer(decoded_html):
+            url = self._normalize_avito_url(match.group(0))
+            if url and url not in seen:
+                seen.add(url)
+                urls.append(url)
+
         return urls
 
     def _normalize_avito_url(self, href: str) -> str | None:
+        href = href.strip().strip('"').strip("'")
         full_url = urljoin(AVITO_BASE_URL, href)
         parsed = urlparse(full_url)
 
@@ -233,6 +294,42 @@ class AvitoCrawler:
             return None
 
         return f"{AVITO_BASE_URL}{parsed.path}"
+
+    def _build_empty_result_message(self, processed_pages: list[tuple[str, str]]) -> str:
+        if not processed_pages:
+            return "Avito search pages were not loaded"
+
+        search_url, html = processed_pages[-1]
+        block_reason = self._detect_block_reason(html)
+        if block_reason:
+            return f"Avito did not return listing links for {search_url}. Possible reason: {block_reason}"
+
+        soup = BeautifulSoup(html, "html.parser")
+        title = normalize_text(soup.title.get_text(" ", strip=True)) if soup.title else None
+        body = normalize_text(soup.get_text(" ", strip=True)) or ""
+        snippet = body[:300]
+
+        return (
+            f"Avito did not return listing links for {search_url}. "
+            f"Page title: {title or 'unknown'}. Page text starts with: {snippet!r}"
+        )
+
+    def _detect_block_reason(self, html: str) -> str | None:
+        text = html.lower()
+        checks = {
+            "captcha": "captcha page",
+            "капча": "captcha page",
+            "доступ ограничен": "access restricted",
+            "подозрительная активность": "suspicious activity check",
+            "robot": "robot check",
+            "enable javascript": "javascript/browser check",
+        }
+
+        for marker, reason in checks.items():
+            if marker in text:
+                return reason
+
+        return None
 
 
 class AvitoCardParser:
