@@ -58,7 +58,7 @@ JSON body for testing `POST /avito/parse`:
   "max_items": 20,
   "max_pages": 3,
   "category": "nedvizhimost",
-  "headless": true,
+  "headless": false,
   "save_html": true
 }
 ```

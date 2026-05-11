@@ -68,7 +68,7 @@ class AvitoParseRequest(BaseModel):
         examples=["nedvizhimost"],
         description="Avito category slug",
     )
-    headless: bool = Field(default=True, description="Run browser without a visible UI")
+    headless: bool = Field(default=False, description="Run browser without a visible UI")
     save_html: bool = Field(
         default=True,
         description="Save raw listing HTML into raw_html",
