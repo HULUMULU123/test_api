@@ -7,7 +7,8 @@ import time
 from dataclasses import asdict, dataclass, field
 from functools import wraps
 from pathlib import Path
-from urllib.parse import urlencode, urljoin, urlparse
+from typing import Any
+from urllib.parse import unquote, urlencode, urljoin, urlparse
 
 from bs4 import BeautifulSoup
 from playwright.sync_api import Page, sync_playwright
@@ -233,7 +234,7 @@ class AvitoCrawler:
         full_url = urljoin(AVITO_BASE_URL, href)
         parsed = urlparse(full_url)
 
-        if "avito.ru" not in parsed.netloc:
+        if parsed.netloc not in {"avito.ru", "www.avito.ru"}:
             return None
 
         path = parsed.path
