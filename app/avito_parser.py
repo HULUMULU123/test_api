@@ -7,7 +7,8 @@ import time
 from dataclasses import asdict, dataclass, field
 from functools import wraps
 from pathlib import Path
-from urllib.parse import urlencode, urljoin, urlparse
+from typing import Any
+from urllib.parse import unquote, urlencode, urljoin, urlparse
 
 from bs4 import BeautifulSoup
 from playwright.sync_api import Page, TimeoutError as PlaywrightTimeoutError, sync_playwright
@@ -131,6 +132,7 @@ class AvitoCrawler:
             "div[data-marker='item']",
             "[data-marker='item']",
             "a[data-marker='item-title']",
+            "a[data-marker='item-title/link']",
             "a[data-marker='item/link']",
             "a[itemprop='url']",
             "a[href*='_']",
@@ -235,6 +237,7 @@ class AvitoCrawler:
         seen = set()
         selectors = [
             "a[data-marker='item-title']",
+            "a[data-marker='item-title/link']",
             "a[data-marker='item/link']",
             "a[itemprop='url']",
             "div[data-marker='item'] a[href]",
@@ -257,20 +260,91 @@ class AvitoCrawler:
                 break
 
         if not urls:
+            urls.extend(self._extract_listing_urls_from_json(soup, seen))
+
+        if not urls:
             urls.extend(self._extract_listing_urls_from_text(html, seen))
 
         return urls
+
+    def _extract_listing_urls_from_json(self, soup: BeautifulSoup, seen: set[str]) -> list[str]:
+        urls = []
+
+        for script in soup.select("script"):
+            raw_script = script.string or script.get_text() or ""
+            if not raw_script:
+                continue
+
+            for data in self._iter_json_payloads(raw_script):
+                for href in self._iter_listing_hrefs(data):
+                    url = self._normalize_avito_url(href)
+                    if url and url not in seen:
+                        seen.add(url)
+                        urls.append(url)
+
+        return urls
+
+    def _iter_json_payloads(self, script_text: str):
+        script_text = script_text.strip()
+        decoder = json.JSONDecoder()
+        start_positions = []
+
+        if script_text.startswith(("{", "[")):
+            start_positions.append(0)
+
+        for marker in [
+            "window.__initialData__",
+            "window.__INITIAL_STATE__",
+            "window.__reduxState__",
+        ]:
+            marker_pos = script_text.find(marker)
+            if marker_pos == -1:
+                continue
+
+            equals_pos = script_text.find("=", marker_pos + len(marker))
+            if equals_pos == -1:
+                continue
+
+            for index in range(equals_pos + 1, len(script_text)):
+                if script_text[index] in "[{":
+                    start_positions.append(index)
+                    break
+
+        for start in start_positions:
+            try:
+                data, _ = decoder.raw_decode(script_text[start:])
+            except json.JSONDecodeError:
+                continue
+            yield data
+
+    def _iter_listing_hrefs(self, value: Any):
+        if isinstance(value, dict):
+            for key, item in value.items():
+                if isinstance(item, str) and key.lower() in {
+                    "url",
+                    "href",
+                    "urlpath",
+                    "url_path",
+                    "path",
+                }:
+                    yield item
+                else:
+                    yield from self._iter_listing_hrefs(item)
+        elif isinstance(value, list):
+            for item in value:
+                yield from self._iter_listing_hrefs(item)
 
     def _extract_listing_urls_from_text(self, html: str, seen: set[str]) -> list[str]:
         urls = []
         decoded_html = (
             html.replace("\\u002F", "/")
+            .replace("\\u002f", "/")
             .replace("\\/", "/")
             .replace("&quot;", '"')
             .replace("&amp;", "&")
         )
         pattern = re.compile(
-            r"(?:https?://www\.avito\.ru)?/[A-Za-zА-Яа-я0-9_./%-]+_\d+",
+            r"""(?:https?://(?:www\.)?avito\.ru)?/[\wА-Яа-яЁё./%~-]+_\d+(?:[/?#][^\s"'<>]*)?""",
             flags=re.IGNORECASE,
         )
 
@@ -283,11 +357,11 @@ class AvitoCrawler:
         return urls
 
     def _normalize_avito_url(self, href: str) -> str | None:
-        href = href.strip().strip('"').strip("'")
+        href = unquote(href.strip().strip('"').strip("'"))
         full_url = urljoin(AVITO_BASE_URL, href)
         parsed = urlparse(full_url)
 
-        if "avito.ru" not in parsed.netloc:
+        if parsed.netloc not in {"avito.ru", "www.avito.ru"}:
             return None
 
         if not re.search(r"_\d+$", parsed.path):
