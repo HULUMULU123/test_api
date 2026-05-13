@@ -4,7 +4,10 @@ import logging
 import os
 import random
 import re
+import shutil
+import subprocess
 import time
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field
 from functools import wraps
 from html import unescape
@@ -102,19 +105,70 @@ def parse_price(value: str | None) -> int | None:
     return int(digits)
 
 
-def resolve_browser_headless(headless: bool) -> bool:
-    if headless:
-        return True
-
+@contextmanager
+def headed_browser_display(headless: bool):
     has_display = os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")
-    if os.name == "posix" and not has_display:
-        logger.warning(
-            "Headed browser was requested, but no X server/DISPLAY is available. "
-            "Launching Chromium in headless mode. Use xvfb-run or set DISPLAY to run headed."
-        )
-        return True
+    if headless or os.name != "posix" or has_display:
+        yield
+        return
 
-    return False
+    xvfb_path = shutil.which("Xvfb")
+    if not xvfb_path:
+        raise RuntimeError(
+            "Headed browser was requested, but no X server/DISPLAY is available and Xvfb "
+            "is not installed. Install the system package 'xvfb' (or run the API with "
+            "xvfb-run / a configured DISPLAY) so Avito can be opened in headed mode. "
+            "Using headless=true is possible, but Avito often returns no listing links in "
+            "headless server sessions."
+        )
+
+    display_number = _find_free_display_number()
+    display = f":{display_number}"
+    logger.info("Starting Xvfb on DISPLAY=%s for headed Chromium", display)
+    xvfb = subprocess.Popen(
+        [
+            xvfb_path,
+            display,
+            "-screen",
+            "0",
+            "1366x768x24",
+            "-nolisten",
+            "tcp",
+        ],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    previous_display = os.environ.get("DISPLAY")
+    os.environ["DISPLAY"] = display
+    time.sleep(0.5)
+
+    try:
+        if xvfb.poll() is not None:
+            raise RuntimeError("Xvfb failed to start for headed Chromium")
+
+        yield
+    finally:
+        if previous_display is None:
+            os.environ.pop("DISPLAY", None)
+        else:
+            os.environ["DISPLAY"] = previous_display
+
+        xvfb.terminate()
+        try:
+            xvfb.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            xvfb.kill()
+            xvfb.wait(timeout=5)
+
+
+def _find_free_display_number(start: int = 99, stop: int = 199) -> int:
+    for display_number in range(start, stop + 1):
+        lock_path = Path(f"/tmp/.X{display_number}-lock")
+        socket_path = Path(f"/tmp/.X11-unix/X{display_number}")
+        if not lock_path.exists() and not socket_path.exists():
+            return display_number
+
+    raise RuntimeError("No free X display number found for headed Chromium")
 
 
 def safe_filename_from_url(url: str) -> str:
@@ -571,9 +625,9 @@ def parse_avito_realty(
 
     listings: list[dict] = []
 
-    with sync_playwright() as p:
+    with sync_playwright() as p, headed_browser_display(headless):
         browser = p.chromium.launch(
-            headless=resolve_browser_headless(headless),
+            headless=headless,
             args=[
                 "--disable-blink-features=AutomationControlled",
                 "--disable-dev-shm-usage",
