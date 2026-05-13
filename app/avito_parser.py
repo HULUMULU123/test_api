@@ -77,7 +77,6 @@ def retryable(fn):
                     fn.__name__,
                     exc,
                 )
-
                 time.sleep(sleep_time)
 
         raise last_error
@@ -497,7 +496,6 @@ class AvitoCardParser:
             if match:
                 key = normalize_text(match.group(1))
                 value = normalize_text(match.group(2))
-
                 if key and value:
                     return key, value
 
@@ -654,7 +652,6 @@ def parse_avito_realty(
         finally:
             if context is not None:
                 context.close()
-
             if browser is not None:
                 browser.close()
 
