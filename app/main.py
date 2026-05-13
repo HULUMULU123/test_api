@@ -208,7 +208,7 @@ def create_item(item: ItemCreate) -> ItemResponse:
     summary="Parse PortalDA card",
 )
 def parse_portalda(payload: PortaldaParseRequest) -> dict:
-    from .portalda_parser import parse_portalda_card
+    from portalda import parse_portalda_card
 
     try:
         return parse_portalda_card(str(payload.url))
@@ -225,7 +225,7 @@ def parse_portalda(payload: PortaldaParseRequest) -> dict:
     summary="Parse Avito listings",
 )
 def parse_avito(payload: AvitoParseRequest) -> list[dict]:
-    from .avito_parser import parse_avito_realty
+    from main import parse_avito_realty
 
     try:
         return parse_avito_realty(
@@ -262,7 +262,7 @@ def parse_avito(payload: AvitoParseRequest) -> list[dict]:
     summary="Parse Cian listings",
 )
 def parse_cian(payload: CianParseRequest) -> list[dict]:
-    from .cian_parser import parse_cian_realty
+    from cian import parse_cian_realty
 
     try:
         return parse_cian_realty(
@@ -290,3 +290,38 @@ def parse_cian(payload: CianParseRequest) -> list[dict]:
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail=f"Cian parser failed: {exc}",
         ) from exc
+    
+
+@app.post(
+    "/farpost/parse",
+    response_model=list[CianListingResponse],
+    summary="Parse farpost listings",
+)
+def parse_cian(payload: CianParseRequest) -> list[dict]:
+    from farpost import parse_farpost_realty
+
+    try:
+        return parse_farpost_realty(
+            price_min=payload.price_min,
+            price_max=payload.price_max,
+            city=payload.city,
+            search_query=payload.search_query,
+            max_items=payload.max_items,
+            headless=payload.headless,
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=str(exc),
+        ) from exc
+    except RuntimeError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=str(exc),
+        ) from exc
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Cian parser failed: {exc}",
+        ) from exc
+    
