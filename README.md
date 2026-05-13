@@ -7,6 +7,7 @@ Small FastAPI application for testing common request types and parsing PortalDA 
 - `POST /items` — POST request with a JSON body.
 - `POST /portalda/parse` — accepts a PortalDA listing URL and returns parsed listing data.
 - `POST /avito/parse` — accepts Avito search parameters and returns parsed listing data.
+- `POST /cian/parse` — accepts Cian search parameters and returns parsed listing data.
 
 ## Run locally
 
@@ -74,3 +75,33 @@ curl -X POST http://127.0.0.1:8000/avito/parse \
 ```
 
 The response is an array of listings with URL, title, price, address, description, seller, parsed parameters, image URLs, and optional raw HTML path.
+
+
+Parse Cian listings by search parameters:
+
+JSON body for testing `POST /cian/parse`:
+
+```json
+{
+  "city": "moskva",
+  "search_query": "квартира",
+  "price_min": 8000000,
+  "price_max": 15000000,
+  "max_items": 20,
+  "max_pages": 3,
+  "headless": true,
+  "save_html": true
+}
+```
+
+Cian search URLs are built for `deal_type=sale` and the parser automatically chooses Cian `offer_type` from the query: commercial keywords use `commercial`, house/land keywords use `suburban`, and other queries use `flat`. Raw card HTML is saved into `raw_html_cian` when `save_html` is enabled; blocked or empty search pages are saved into `debug_html_cian`.
+
+The same payload is available in `examples/cian_parse_request.json`, so you can test it with curl:
+
+```bash
+curl -X POST http://127.0.0.1:8000/cian/parse \
+  -H "Content-Type: application/json" \
+  --data @examples/cian_parse_request.json
+```
+
+The response is an array of Cian listings with URL, title, price, address, description, seller, parsed parameters, image URLs, and optional raw HTML path/error fields.

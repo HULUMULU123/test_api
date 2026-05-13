@@ -32,7 +32,7 @@ class AvitoCrawlerTests(unittest.TestCase):
     def test_build_search_url_matches_parser_contract(self) -> None:
         self.assertEqual(
             build_search_url("/moskva/", "склад", 8_000_000, 15_000_000, page=2),
-            "https://www.avito.ru/moskva/nedvizhimost?"
+            "https://www.avito.ru/moskva/kommercheskaya_nedvizhimost?"
             "q=%D1%81%D0%BA%D0%BB%D0%B0%D0%B4&pmin=8000000&pmax=15000000&p=2",
         )
 
