@@ -63,7 +63,7 @@ JSON body for testing `POST /avito/parse`:
 }
 ```
 
-For production servers without an X server, keep `headless` set to `true`. Use `headless: false` only on a machine with a display or when running through `xvfb-run`.
+The API uses the same Playwright flow as the standalone parser: Chromium is launched with the request's `headless` value and only `--disable-blink-features=AutomationControlled`. For server runs with `headless: false`, provide a display yourself, for example by starting the service through `xvfb-run` or another configured `DISPLAY`. Example: `xvfb-run -a uvicorn app.main:app --host 0.0.0.0 --port 8000`.
 
 The same payload is available in `examples/avito_parse_request.json`, so you can test it with curl:
 
@@ -73,4 +73,4 @@ curl -X POST http://127.0.0.1:8000/avito/parse \
   --data @examples/avito_parse_request.json
 ```
 
-The response is an array of listings with URL, title, price, address, description, seller, parsed parameters, image URLs, and optional raw HTML path. If Avito does not render listing links, the API returns `502` with a `detail` message that includes the last search URL and a possible reason such as a captcha, access restriction, or unexpected page content.
+The response is an array of listings with URL, title, price, address, description, seller, parsed parameters, image URLs, and optional raw HTML path.
