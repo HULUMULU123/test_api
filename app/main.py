@@ -208,7 +208,7 @@ def create_item(item: ItemCreate) -> ItemResponse:
     summary="Parse PortalDA card",
 )
 def parse_portalda(payload: PortaldaParseRequest) -> dict:
-    from portalda_parser import parse_portalda_card
+    from .portalda_parser import parse_portalda_card
 
     try:
         return parse_portalda_card(str(payload.url))
@@ -225,7 +225,7 @@ def parse_portalda(payload: PortaldaParseRequest) -> dict:
     summary="Parse Avito listings",
 )
 def parse_avito(payload: AvitoParseRequest) -> list[dict]:
-    from avito_parser import parse_avito_realty
+    from .avito_parser import parse_avito_realty
 
     try:
         return parse_avito_realty(
@@ -262,7 +262,7 @@ def parse_avito(payload: AvitoParseRequest) -> list[dict]:
     summary="Parse Cian listings",
 )
 def parse_cian(payload: CianParseRequest) -> list[dict]:
-    from cian_parser import parse_cian_realty
+    from .cian_parser import parse_cian_realty
 
     try:
         return parse_cian_realty(
@@ -298,7 +298,7 @@ def parse_cian(payload: CianParseRequest) -> list[dict]:
     summary="Parse farpost listings",
 )
 def parse_cian(payload: CianParseRequest) -> list[dict]:
-    from farpost_parser import parse_farpost_realty
+    from .farpost_parser import parse_farpost_realty
 
     try:
         return parse_farpost_realty(
