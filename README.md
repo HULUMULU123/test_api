@@ -63,7 +63,7 @@ JSON body for testing `POST /avito/parse`:
 }
 ```
 
-For production servers without an X server, keep `headless` set to `true`. Use `headless: false` only on a machine with a display or when running through `xvfb-run`.
+Avito may hide listings in purely headless browser sessions. For API/server runs, prefer `headless: false` and provide a virtual display. If no `DISPLAY`/`WAYLAND_DISPLAY` is set, the parser now starts `Xvfb` automatically when the `xvfb` system package is installed; alternatively run the API through `xvfb-run`. Use `headless: true` only when you accept that Avito can return no listing links.
 
 The same payload is available in `examples/avito_parse_request.json`, so you can test it with curl:
 
