@@ -4,11 +4,14 @@ import logging
 import os
 import random
 import re
+import shutil
+import subprocess
 import time
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field
 from functools import wraps
+from html import unescape
 from pathlib import Path
-from typing import Any
 from urllib.parse import unquote, urlencode, urljoin, urlparse
 
 from bs4 import BeautifulSoup
@@ -29,6 +32,16 @@ USER_AGENT = (
 )
 
 logger = logging.getLogger("avito_parser")
+
+SEARCH_LINK_SELECTOR = (
+    "a[href*='_'], a[data-marker*='item-title'], [data-marker='item'] a[href]"
+)
+STEALTH_INIT_SCRIPT = """
+Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+Object.defineProperty(navigator, 'languages', { get: () => ['ru-RU', 'ru', 'en-US', 'en'] });
+Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
+window.chrome = window.chrome || { runtime: {} };
+"""
 
 
 @dataclass
@@ -92,19 +105,69 @@ def parse_price(value: str | None) -> int | None:
     return int(digits)
 
 
-def resolve_browser_headless(headless: bool) -> bool:
-    if headless:
-        return True
+@contextmanager
+def headed_browser_display(headless: bool):
+    if headless or os.name != "posix" or os.environ.get("DISPLAY"):
+        yield
+        return
 
-    has_display = os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")
-    if os.name == "posix" and not has_display:
-        logger.warning(
-            "Headed browser was requested, but no X server/DISPLAY is available. "
-            "Launching Chromium in headless mode. Use xvfb-run or set DISPLAY to run headed."
+    xvfb_path = shutil.which("Xvfb")
+    if not xvfb_path:
+        raise RuntimeError(
+            "Headed browser was requested, but no X server/DISPLAY is available and Xvfb "
+            "is not installed. Install the system package 'xvfb' (or run the API with "
+            "xvfb-run / a configured DISPLAY) so Avito can be opened in headed mode. "
+            "Using headless=true is possible, but Avito often returns no listing links in "
+            "headless server sessions."
         )
-        return True
 
-    return False
+    display_number = _find_free_display_number()
+    display = f":{display_number}"
+    logger.info("Starting Xvfb on DISPLAY=%s for headed Chromium", display)
+    xvfb = subprocess.Popen(
+        [
+            xvfb_path,
+            display,
+            "-screen",
+            "0",
+            "1366x768x24",
+            "-nolisten",
+            "tcp",
+        ],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    previous_display = os.environ.get("DISPLAY")
+    os.environ["DISPLAY"] = display
+    time.sleep(0.5)
+
+    try:
+        if xvfb.poll() is not None:
+            raise RuntimeError("Xvfb failed to start for headed Chromium")
+
+        yield
+    finally:
+        if previous_display is None:
+            os.environ.pop("DISPLAY", None)
+        else:
+            os.environ["DISPLAY"] = previous_display
+
+        xvfb.terminate()
+        try:
+            xvfb.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            xvfb.kill()
+            xvfb.wait(timeout=5)
+
+
+def _find_free_display_number(start: int = 99, stop: int = 199) -> int:
+    for display_number in range(start, stop + 1):
+        lock_path = Path(f"/tmp/.X{display_number}-lock")
+        socket_path = Path(f"/tmp/.X11-unix/X{display_number}")
+        if not lock_path.exists() and not socket_path.exists():
+            return display_number
+
+    raise RuntimeError("No free X display number found for headed Chromium")
 
 
 def safe_filename_from_url(url: str) -> str:
@@ -206,11 +269,18 @@ class AvitoCrawler:
         self.page.wait_for_timeout(2500)
 
         try:
-            self.page.wait_for_selector("a[href*='_']", timeout=10_000)
+            self.page.wait_for_selector(SEARCH_LINK_SELECTOR, timeout=10_000)
         except Exception:
-            logger.warning("No listing links found, continue with page content")
+            logger.warning("No listing links found before scrolling, continue with page content")
+
+        self._scroll_search_results()
 
         return self.page.content()
+
+    def _scroll_search_results(self) -> None:
+        for _ in range(3):
+            self.page.mouse.wheel(0, 900)
+            self.page.wait_for_timeout(700)
 
     def _extract_listing_urls(self, html: str) -> list[str]:
         soup = BeautifulSoup(html, "lxml")
@@ -220,8 +290,11 @@ class AvitoCrawler:
 
         selectors = [
             "a[data-marker='item-title']",
+            "a[data-marker*='item-title']",
             "a[itemprop='url']",
             "div[data-marker='item'] a[href]",
+            "[data-marker^='item'] a[href]",
+            "article a[href]",
             "a[href*='_']",
         ]
 
@@ -232,28 +305,44 @@ class AvitoCrawler:
                 if not href:
                     continue
 
-                url = self._normalize_avito_url(href)
-
-                if not url:
-                    continue
-
-                if url not in seen:
-                    seen.add(url)
-                    urls.append(url)
+                self._append_normalized_url(href, urls, seen)
 
             if urls:
                 break
 
+        if not urls:
+            self._extract_listing_urls_from_text(html, urls, seen)
+
         return urls
+
+    def _append_normalized_url(self, href: str, urls: list[str], seen: set[str]) -> None:
+        url = self._normalize_avito_url(href)
+
+        if url and url not in seen:
+            seen.add(url)
+            urls.append(url)
+
+    def _extract_listing_urls_from_text(self, html: str, urls: list[str], seen: set[str]) -> None:
+        decoded_html = unquote(unescape(html)).replace(r"\/", "/")
+        decoded_html = decoded_html.replace(r"\u002F", "/").replace(r"\u002f", "/")
+        patterns = [
+            r"href=[\"']([^\"']+_[0-9]{6,}[^\"']*)",
+            r"(?<![A-Za-z0-9_./%-])(/[A-Za-zА-Яа-я0-9_./%-]+_[0-9]{6,})(?=[?#\"'<>\s]|$)",
+        ]
+
+        for pattern in patterns:
+            for match in re.finditer(pattern, decoded_html):
+                href = match.group(1)
+                self._append_normalized_url(href, urls, seen)
 
     def _normalize_avito_url(self, href: str) -> str | None:
         full_url = urljoin(AVITO_BASE_URL, href)
         parsed = urlparse(full_url)
 
-        if parsed.netloc not in {"avito.ru", "www.avito.ru"}:
+        if not parsed.netloc.endswith("avito.ru"):
             return None
 
-        path = parsed.path
+        path = unquote(parsed.path)
 
         if not re.search(r"_\d+$", path):
             return None
@@ -535,11 +624,14 @@ def parse_avito_realty(
 
     listings: list[dict] = []
 
-    with sync_playwright() as p:
+    with headed_browser_display(headless), sync_playwright() as p:
         browser = p.chromium.launch(
-            headless=resolve_browser_headless(headless),
+            headless=headless,
+            env=os.environ.copy(),
             args=[
                 "--disable-blink-features=AutomationControlled",
+                "--disable-dev-shm-usage",
+                "--no-sandbox",
             ],
         )
         context = browser.new_context(
@@ -547,7 +639,11 @@ def parse_avito_realty(
             viewport={"width": 1366, "height": 768},
             locale="ru-RU",
             timezone_id="Europe/Moscow",
+            extra_http_headers={
+                "Accept-Language": "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7",
+            },
         )
+        context.add_init_script(STEALTH_INIT_SCRIPT)
 
         try:
             page = context.new_page()
@@ -564,6 +660,21 @@ def parse_avito_realty(
             parser = AvitoCardParser(page=page, save_html=save_html)
             urls = crawler.collect_listing_urls()
             logger.info("Total collected URLs: %s", len(urls))
+
+            if not urls:
+                search_url = build_search_url(
+                    city=city,
+                    search_query=search_query,
+                    price_min=price_min,
+                    price_max=price_max,
+                    category=category,
+                )
+                raise RuntimeError(
+                    "Avito parser did not find listing links. "
+                    f"Last search URL: {search_url}. "
+                    "The page may be empty, captcha-protected, access-restricted, "
+                    "or Avito may have changed search-result markup."
+                )
 
             for index, url in enumerate(urls, start=1):
                 logger.info("Parse card %s/%s", index, len(urls))

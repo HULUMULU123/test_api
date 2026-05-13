@@ -178,3 +178,8 @@ def parse_avito(payload: AvitoParseRequest) -> list[dict]:
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail=str(exc),
         ) from exc
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Avito parser failed: {exc}",
+        ) from exc
