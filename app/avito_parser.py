@@ -16,8 +16,6 @@ from playwright.sync_api import Page, sync_playwright
 AVITO_BASE_URL = "https://www.avito.ru"
 RAW_HTML_DIR = "raw_html"
 
-# Для локального ручного запуска можно поставить False.
-# Для FastAPI/сервера лучше True, иначе браузер может не стартовать без GUI.
 HEADLESS = True
 
 REQUEST_DELAY_MIN = 2.5
@@ -118,6 +116,59 @@ def save_raw_html(url: str, html: str, raw_dir: str = RAW_HTML_DIR) -> str:
     return str(path)
 
 
+def normalize_category(category: str, search_query: str) -> str:
+    """
+    FastAPI можно не менять.
+
+    Если с API приходит category='nedvizhimost', но запрос явно коммерческий
+    ('склад', 'офис', 'помещение' и т.д.), внутри переводим в правильный
+    slug Avito: kommercheskaya_nedvizhimost.
+    """
+    category = (category or "nedvizhimost").strip().strip("/")
+    query = (search_query or "").lower().strip()
+
+    commercial_keywords = [
+        "склад",
+        "склады",
+        "офис",
+        "офисы",
+        "помещение",
+        "помещения",
+        "торговое",
+        "торговый",
+        "магазин",
+        "производство",
+        "производственное",
+        "общепит",
+        "свободного назначения",
+        "псн",
+        "коммерция",
+        "коммерческая",
+        "база",
+        "ангар",
+    ]
+
+    residential_keywords = [
+        "квартира",
+        "квартиру",
+        "комната",
+        "дом",
+        "коттедж",
+        "таунхаус",
+        "дача",
+        "участок",
+    ]
+
+    if category == "nedvizhimost":
+        if any(word in query for word in commercial_keywords):
+            return "kommercheskaya_nedvizhimost"
+
+        if any(word in query for word in residential_keywords):
+            return "nedvizhimost"
+
+    return category
+
+
 def build_search_url(
     city: str,
     search_query: str,
@@ -127,7 +178,7 @@ def build_search_url(
     category: str = "nedvizhimost",
 ) -> str:
     city = city.strip().strip("/")
-    category = category.strip().strip("/")
+    category = normalize_category(category, search_query)
 
     query = {
         "q": search_query.strip(),
@@ -156,17 +207,26 @@ class AvitoCrawler:
         category: str = "nedvizhimost",
     ):
         self.page = page
-        self.city = city
+        self.city = city.strip().strip("/")
         self.search_query = search_query
         self.price_min = price_min
         self.price_max = price_max
         self.max_pages = max_pages
         self.max_cards = max_cards
-        self.category = category
+        self.category = normalize_category(category, search_query)
 
     def collect_listing_urls(self) -> list[str]:
         result: list[str] = []
         seen: set[str] = set()
+
+        logger.info(
+            "Avito search started: city=%s category=%s query=%r price_min=%r price_max=%r",
+            self.city,
+            self.category,
+            self.search_query,
+            self.price_min,
+            self.price_max,
+        )
 
         for page_num in range(1, self.max_pages + 1):
             if len(result) >= self.max_cards:
@@ -207,17 +267,54 @@ class AvitoCrawler:
     @retryable
     def _load_search_page(self, url: str) -> str:
         self.page.goto(url, wait_until="domcontentloaded", timeout=60_000)
-        self.page.wait_for_timeout(2500)
+        self.page.wait_for_timeout(4000)
+
+        try:
+            self.page.wait_for_load_state("networkidle", timeout=15_000)
+        except Exception:
+            logger.warning("Network idle timeout, continue with current DOM")
+
+        html = self.page.content()
+
+        self._check_blocked_page(html, url)
 
         try:
             self.page.wait_for_selector(
-                "a[data-marker='item-title'], div[data-marker='item'] a[href], a[href*='_']",
-                timeout=10_000,
+                (
+                    "div[data-marker='item'], "
+                    "a[data-marker='item-title'], "
+                    "a[itemprop='url'], "
+                    f"a[href*='/{self.city}/'][href*='_']"
+                ),
+                timeout=12_000,
             )
         except Exception:
-            logger.warning("No listing links found, continue with page content")
+            debug_path = save_raw_html(url, html, "debug_search_html")
+            logger.warning(
+                "No listing links found. Saved search HTML for debug: %s",
+                debug_path,
+            )
 
-        return self.page.content()
+        return html
+
+    def _check_blocked_page(self, html: str, url: str) -> None:
+        lowered = html.lower()
+
+        block_markers = [
+            "доступ ограничен",
+            "captcha",
+            "капча",
+            "подтвердите",
+            "verify",
+            "are you a human",
+            "checking your browser",
+        ]
+
+        if any(marker in lowered for marker in block_markers):
+            debug_path = save_raw_html(url, html, "debug_blocked_html")
+            raise RuntimeError(
+                f"Avito blocked parser or returned captcha page. Debug HTML: {debug_path}"
+            )
 
     def _extract_listing_urls(self, html: str) -> list[str]:
         soup = BeautifulSoup(html, "lxml")
@@ -227,8 +324,9 @@ class AvitoCrawler:
 
         selectors = [
             "a[data-marker='item-title']",
-            "a[itemprop='url']",
             "div[data-marker='item'] a[href]",
+            "a[itemprop='url']",
+            f"a[href*='/{self.city}/'][href*='_']",
             "a[href*='_']",
         ]
 
@@ -262,8 +360,22 @@ class AvitoCrawler:
 
         path = parsed.path
 
-        # Карточки Avito обычно заканчиваются на _числовой_id.
+        if self.city and f"/{self.city}/" not in path:
+            return None
+
         if not re.search(r"_\d+$", path):
+            return None
+
+        bad_path_parts = [
+            "/profile",
+            "/favorites",
+            "/cart",
+            "/shops",
+            "/brands",
+            "/rossiya/",
+        ]
+
+        if any(part in path for part in bad_path_parts):
             return None
 
         return f"{AVITO_BASE_URL}{path}"
@@ -314,17 +426,48 @@ class AvitoCardParser:
         logger.info("Open card: %s", url)
 
         self.page.goto(url, wait_until="domcontentloaded", timeout=60_000)
-        self.page.wait_for_timeout(3000)
+        self.page.wait_for_timeout(4000)
+
+        try:
+            self.page.wait_for_load_state("networkidle", timeout=15_000)
+        except Exception:
+            logger.warning("Network idle timeout on card, continue with current DOM")
+
+        html = self.page.content()
+        self._check_blocked_page(html, url)
 
         try:
             self.page.wait_for_selector(
-                "h1, [data-marker='item-view/title-info']",
+                "h1, [data-marker='item-view/title-info'], [itemprop='name']",
                 timeout=15_000,
             )
         except Exception:
-            logger.warning("Card title selector not found: %s", url)
+            debug_path = save_raw_html(url, html, "debug_card_html")
+            logger.warning(
+                "Card title selector not found. Saved card HTML for debug: %s",
+                debug_path,
+            )
 
-        return self.page.content()
+        return html
+
+    def _check_blocked_page(self, html: str, url: str) -> None:
+        lowered = html.lower()
+
+        block_markers = [
+            "доступ ограничен",
+            "captcha",
+            "капча",
+            "подтвердите",
+            "verify",
+            "are you a human",
+            "checking your browser",
+        ]
+
+        if any(marker in lowered for marker in block_markers):
+            debug_path = save_raw_html(url, html, "debug_blocked_html")
+            raise RuntimeError(
+                f"Avito blocked parser or returned captcha page. Debug HTML: {debug_path}"
+            )
 
     def _select_text(self, soup: BeautifulSoup, selectors: list[str]) -> str | None:
         for selector in selectors:
@@ -363,6 +506,7 @@ class AvitoCardParser:
             "[itemprop='price']",
             "span[class*='price']",
             "div[class*='price']",
+            "meta[itemprop='price']",
         ]
 
         for selector in selectors:
@@ -371,7 +515,13 @@ class AvitoCardParser:
             if not node:
                 continue
 
-            content = node.get("content") or node.get_text(" ", strip=True)
+            content = (
+                node.get("content")
+                or node.get("value")
+                or node.get("aria-label")
+                or node.get_text(" ", strip=True)
+            )
+
             price = parse_price(content)
 
             if price:
@@ -432,6 +582,7 @@ class AvitoCardParser:
             "ul[class*='params'] li",
             "div[class*='params'] li",
             "li[class*='params']",
+            "[data-marker='item-view/item-params'] div",
         ]
 
         for selector in selectors:
@@ -478,6 +629,8 @@ class AvitoCardParser:
 
         patterns = [
             r"^(Общая площадь)\s+(.+)$",
+            r"^(Площадь помещения)\s+(.+)$",
+            r"^(Площадь склада)\s+(.+)$",
             r"^(Жилая площадь)\s+(.+)$",
             r"^(Площадь кухни)\s+(.+)$",
             r"^(Этаж)\s+(.+)$",
@@ -488,6 +641,9 @@ class AvitoCardParser:
             r"^(Способ продажи)\s+(.+)$",
             r"^(Вид сделки)\s+(.+)$",
             r"^(Тип дома)\s+(.+)$",
+            r"^(Класс здания)\s+(.+)$",
+            r"^(Тип помещения)\s+(.+)$",
+            r"^(Назначение помещения)\s+(.+)$",
         ]
 
         for pattern in patterns:
@@ -496,6 +652,7 @@ class AvitoCardParser:
             if match:
                 key = normalize_text(match.group(1))
                 value = normalize_text(match.group(2))
+
                 if key and value:
                     return key, value
 
@@ -589,6 +746,8 @@ def parse_avito_realty(
     if max_items <= 0:
         return []
 
+    normalized_category = normalize_category(category, search_query)
+
     listings: list[dict] = []
 
     with sync_playwright() as p:
@@ -602,6 +761,8 @@ def parse_avito_realty(
                     "--disable-blink-features=AutomationControlled",
                     "--no-sandbox",
                     "--disable-dev-shm-usage",
+                    "--disable-gpu",
+                    "--disable-extensions",
                 ],
             )
 
@@ -622,7 +783,7 @@ def parse_avito_realty(
                 price_max=price_max,
                 max_pages=max_pages,
                 max_cards=max_items,
-                category=category,
+                category=normalized_category,
             )
 
             parser = AvitoCardParser(
@@ -633,6 +794,13 @@ def parse_avito_realty(
             urls = crawler.collect_listing_urls()
             logger.info("Total collected URLs: %s", len(urls))
 
+            if not urls:
+                logger.warning(
+                    "No URLs collected. Check debug_search_html directory. "
+                    "Possible reasons: wrong category, Avito anti-bot, changed DOM, empty search result."
+                )
+                return []
+
             for index, url in enumerate(urls, start=1):
                 logger.info("Parse card %s/%s", index, len(urls))
 
@@ -640,10 +808,11 @@ def parse_avito_realty(
                 listings.append(asdict(listing))
 
                 logger.info(
-                    "Parsed: title=%r price=%r url=%s",
+                    "Parsed: title=%r price=%r url=%s error=%r",
                     listing.title,
                     listing.price,
                     listing.url,
+                    listing.error,
                 )
 
                 if len(listings) >= max_items:
@@ -664,8 +833,8 @@ if __name__ == "__main__":
         price_max=15_000_000,
         city="moskva",
         search_query="склад",
-        max_items=20,
-        max_pages=3,
+        max_items=5,
+        max_pages=1,
         category="nedvizhimost",
         headless=False,
         save_html=True,
