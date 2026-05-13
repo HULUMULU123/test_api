@@ -107,8 +107,7 @@ def parse_price(value: str | None) -> int | None:
 
 @contextmanager
 def headed_browser_display(headless: bool):
-    has_display = os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")
-    if headless or os.name != "posix" or has_display:
+    if headless or os.name != "posix" or os.environ.get("DISPLAY"):
         yield
         return
 
@@ -625,9 +624,10 @@ def parse_avito_realty(
 
     listings: list[dict] = []
 
-    with sync_playwright() as p, headed_browser_display(headless):
+    with headed_browser_display(headless), sync_playwright() as p:
         browser = p.chromium.launch(
             headless=headless,
+            env=os.environ.copy(),
             args=[
                 "--disable-blink-features=AutomationControlled",
                 "--disable-dev-shm-usage",
