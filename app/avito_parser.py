@@ -3,9 +3,13 @@ import json
 import logging
 import random
 import re
+import shutil
+import subprocess
 import time
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field
 from functools import wraps
+from html import unescape
 from pathlib import Path
 from urllib.parse import urlencode, urljoin, urlparse
 
@@ -37,6 +41,16 @@ logging.basicConfig(
 )
 
 logger = logging.getLogger("avito_parser")
+
+SEARCH_LINK_SELECTOR = (
+    "a[href*='_'], a[data-marker*='item-title'], [data-marker='item'] a[href]"
+)
+STEALTH_INIT_SCRIPT = """
+Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+Object.defineProperty(navigator, 'languages', { get: () => ['ru-RU', 'ru', 'en-US', 'en'] });
+Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
+window.chrome = window.chrome || { runtime: {} };
+"""
 
 
 @dataclass
@@ -209,11 +223,18 @@ class AvitoCrawler:
         self.page.wait_for_timeout(2500)
 
         try:
-            self.page.wait_for_selector("a[href*='_']", timeout=10_000)
+            self.page.wait_for_selector(SEARCH_LINK_SELECTOR, timeout=10_000)
         except Exception:
-            logger.warning("No listing links found, continue with page content")
+            logger.warning("No listing links found before scrolling, continue with page content")
+
+        self._scroll_search_results()
 
         return self.page.content()
+
+    def _scroll_search_results(self) -> None:
+        for _ in range(3):
+            self.page.mouse.wheel(0, 900)
+            self.page.wait_for_timeout(700)
 
     def _extract_listing_urls(self, html: str) -> list[str]:
         soup = BeautifulSoup(html, "lxml")
@@ -223,8 +244,11 @@ class AvitoCrawler:
 
         selectors = [
             "a[data-marker='item-title']",
+            "a[data-marker*='item-title']",
             "a[itemprop='url']",
             "div[data-marker='item'] a[href]",
+            "[data-marker^='item'] a[href]",
+            "article a[href]",
             "a[href*='_']",
         ]
 
@@ -235,19 +259,35 @@ class AvitoCrawler:
                 if not href:
                     continue
 
-                url = self._normalize_avito_url(href)
-
-                if not url:
-                    continue
-
-                if url not in seen:
-                    seen.add(url)
-                    urls.append(url)
+                self._append_normalized_url(href, urls, seen)
 
             if urls:
                 break
 
+        if not urls:
+            self._extract_listing_urls_from_text(html, urls, seen)
+
         return urls
+
+    def _append_normalized_url(self, href: str, urls: list[str], seen: set[str]) -> None:
+        url = self._normalize_avito_url(href)
+
+        if url and url not in seen:
+            seen.add(url)
+            urls.append(url)
+
+    def _extract_listing_urls_from_text(self, html: str, urls: list[str], seen: set[str]) -> None:
+        decoded_html = unquote(unescape(html)).replace(r"\/", "/")
+        decoded_html = decoded_html.replace(r"\u002F", "/").replace(r"\u002f", "/")
+        patterns = [
+            r"href=[\"']([^\"']+_[0-9]{6,}[^\"']*)",
+            r"(?<![A-Za-z0-9_./%-])(/[A-Za-zА-Яа-я0-9_./%-]+_[0-9]{6,})(?=[?#\"'<>\s]|$)",
+        ]
+
+        for pattern in patterns:
+            for match in re.finditer(pattern, decoded_html):
+                href = match.group(1)
+                self._append_normalized_url(href, urls, seen)
 
     def _normalize_avito_url(self, href: str) -> str | None:
         full_url = urljoin(AVITO_BASE_URL, href)
@@ -256,7 +296,7 @@ class AvitoCrawler:
         if "avito.ru" not in parsed.netloc:
             return None
 
-        path = parsed.path
+        path = unquote(parsed.path)
 
         if not re.search(r"_\d+$", path):
             return None
@@ -596,11 +636,13 @@ def parse_avito_realty(
 
     listings: list[dict] = []
 
-    with sync_playwright() as p:
+    with headed_browser_display(headless), sync_playwright() as p:
         browser = p.chromium.launch(
             headless=headless,
             args=[
                 "--disable-blink-features=AutomationControlled",
+                "--disable-dev-shm-usage",
+                "--no-sandbox",
             ],
         )
 
@@ -609,7 +651,11 @@ def parse_avito_realty(
             viewport={"width": 1366, "height": 768},
             locale="ru-RU",
             timezone_id="Europe/Moscow",
+            extra_http_headers={
+                "Accept-Language": "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7",
+            },
         )
+        context.add_init_script(STEALTH_INIT_SCRIPT)
 
         page = context.new_page()
 
