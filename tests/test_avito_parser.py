@@ -1,6 +1,8 @@
 import unittest
+from unittest.mock import patch
 
 from bs4 import BeautifulSoup
+from app.main import AvitoParseRequest, parse_avito
 
 from app.avito_parser import (
     AvitoCardParser,
@@ -98,6 +100,47 @@ class AvitoCardParserTests(unittest.TestCase):
         self.assertEqual(normalize_text("  цена\n объекта  "), "цена объекта")
         self.assertEqual(parse_price("10 500 000 ₽"), 10_500_000)
         self.assertIsNone(parse_price("Цена не указана"))
+
+
+class AvitoEndpointTests(unittest.TestCase):
+    def test_parse_endpoint_uses_package_relative_parser_import(self) -> None:
+        listing = {
+            "url": "https://www.avito.ru/moskva/nedvizhimost/sklad_1234567890",
+            "title": "Склад",
+            "price": 10_500_000,
+            "address": "Москва",
+            "description": "Описание",
+            "seller": "Продавец",
+            "params": {},
+            "images": [],
+            "raw_html_path": None,
+            "error": None,
+        }
+
+        payload = AvitoParseRequest(
+            city="moskva",
+            search_query="склад",
+            max_items=1,
+            max_pages=1,
+            headless=True,
+            save_html=False,
+        )
+
+        with patch("app.avito_parser.parse_avito_realty", return_value=[listing]) as parser:
+            result = parse_avito(payload)
+
+        self.assertEqual(result, [listing])
+        parser.assert_called_once_with(
+            price_min=None,
+            price_max=None,
+            city="moskva",
+            search_query="склад",
+            max_items=1,
+            max_pages=1,
+            category="nedvizhimost",
+            headless=True,
+            save_html=False,
+        )
 
 
 if __name__ == "__main__":
