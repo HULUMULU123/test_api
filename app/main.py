@@ -85,7 +85,72 @@ class AvitoParseRequest(BaseModel):
         return self
 
 
+class CianParseRequest(BaseModel):
+    city: str = Field(
+        ...,
+        min_length=1,
+        examples=["moskva"],
+        description="Cian city slug or supported alias, for example: moskva, spb, habarovsk",
+    )
+    search_query: str = Field(
+        ...,
+        min_length=1,
+        examples=["квартира"],
+        description="Search phrase for Cian",
+    )
+    price_min: int | None = Field(
+        default=None,
+        ge=0,
+        examples=[8000000],
+        description="Minimum price filter",
+    )
+    price_max: int | None = Field(
+        default=None,
+        ge=0,
+        examples=[15000000],
+        description="Maximum price filter",
+    )
+    max_items: int = Field(
+        default=20,
+        ge=1,
+        le=100,
+        description="Maximum number of Cian listing cards to parse",
+    )
+    max_pages: int = Field(
+        default=3,
+        ge=1,
+        le=20,
+        description="Maximum number of Cian search pages to scan",
+    )
+    headless: bool = Field(default=True, description="Run browser without visible UI")
+    save_html: bool = Field(default=True, description="Save raw listing HTML into raw_html_cian")
+
+    @model_validator(mode="after")
+    def validate_price_range(self) -> "CianParseRequest":
+        if (
+            self.price_min is not None
+            and self.price_max is not None
+            and self.price_min > self.price_max
+        ):
+            raise ValueError("price_min не может быть больше price_max")
+
+        return self
+
+
 class AvitoListingResponse(BaseModel):
+    url: str
+    title: str | None = None
+    price: int | None = None
+    address: str | None = None
+    description: str | None = None
+    seller: str | None = None
+    params: dict[str, str] = Field(default_factory=dict)
+    images: list[str] = Field(default_factory=list)
+    raw_html_path: str | None = None
+    error: str | None = None
+
+
+class CianListingResponse(BaseModel):
     url: str
     title: str | None = None
     price: int | None = None
@@ -188,4 +253,40 @@ def parse_avito(payload: AvitoParseRequest) -> list[dict]:
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail=f"Avito parser failed: {exc}",
+        ) from exc
+
+
+@app.post(
+    "/cian/parse",
+    response_model=list[CianListingResponse],
+    summary="Parse Cian listings",
+)
+def parse_cian(payload: CianParseRequest) -> list[dict]:
+    from .cian_parser import parse_cian_realty
+
+    try:
+        return parse_cian_realty(
+            price_min=payload.price_min,
+            price_max=payload.price_max,
+            city=payload.city,
+            search_query=payload.search_query,
+            max_items=payload.max_items,
+            max_pages=payload.max_pages,
+            headless=payload.headless,
+            save_html=payload.save_html,
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=str(exc),
+        ) from exc
+    except RuntimeError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=str(exc),
+        ) from exc
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Cian parser failed: {exc}",
         ) from exc
