@@ -143,14 +143,7 @@ def create_item(item: ItemCreate) -> ItemResponse:
     summary="Parse PortalDA card",
 )
 def parse_portalda(payload: PortaldaParseRequest) -> dict:
-    try:
-        # Если portalda_parser.py лежит рядом с app.py
-        from portalda_parser import parse_portalda_card
-    except ModuleNotFoundError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_501_NOT_IMPLEMENTED,
-            detail="Файл portalda_parser.py не найден рядом с app.py",
-        ) from exc
+    from .portalda_parser import parse_portalda_card
 
     try:
         return parse_portalda_card(str(payload.url))
@@ -167,9 +160,7 @@ def parse_portalda(payload: PortaldaParseRequest) -> dict:
     summary="Parse Avito listings",
 )
 def parse_avito(payload: AvitoParseRequest) -> list[dict]:
-    # Исправлено: если avito_parser.py лежит рядом с app.py,
-    # импорт должен быть без префикса app.
-    from avito_parser import parse_avito_realty
+    from .avito_parser import parse_avito_realty
 
     try:
         return parse_avito_realty(
