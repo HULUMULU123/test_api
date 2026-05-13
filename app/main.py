@@ -225,7 +225,7 @@ def parse_portalda(payload: PortaldaParseRequest) -> dict:
     summary="Parse Avito listings",
 )
 def parse_avito(payload: AvitoParseRequest) -> list[dict]:
-    from main import parse_avito_realty
+    from avito import parse_avito_realty
 
     try:
         return parse_avito_realty(
