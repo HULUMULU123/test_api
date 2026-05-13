@@ -5,8 +5,8 @@ from pydantic import AnyHttpUrl, BaseModel, Field, model_validator
 
 
 app = FastAPI(
-    title="Test Methods API",
-    description="A small FastAPI application with test endpoints and real estate parsing endpoints.",
+    title="Real Estate Parsing API",
+    description="FastAPI application for parsing real estate listings.",
     version="0.1.0",
 )
 
@@ -30,7 +30,7 @@ class AvitoParseRequest(BaseModel):
         ...,
         min_length=1,
         examples=["moskva"],
-        description="Avito city slug, for example moskva or habarovsk",
+        description="Avito city slug, for example: moskva, habarovsk",
     )
     search_query: str = Field(
         ...,
@@ -68,11 +68,10 @@ class AvitoParseRequest(BaseModel):
         examples=["nedvizhimost"],
         description="Avito category slug",
     )
-    headless: bool = Field(default=False, description="Run browser without a visible UI")
-    save_html: bool = Field(
-        default=True,
-        description="Save raw listing HTML into raw_html",
-    )
+
+    # В API по умолчанию True. На сервере headless=False часто падает без GUI.
+    headless: bool = Field(default=True, description="Run browser without visible UI")
+    save_html: bool = Field(default=True, description="Save raw listing HTML into raw_html")
 
     @model_validator(mode="after")
     def validate_price_range(self) -> "AvitoParseRequest":
@@ -96,32 +95,31 @@ class AvitoListingResponse(BaseModel):
     params: dict[str, str] = Field(default_factory=dict)
     images: list[str] = Field(default_factory=list)
     raw_html_path: str | None = None
+    error: str | None = None
 
 
 class PortaldaParseResponse(BaseModel):
     url: str
-    title: str
-    price: int
-    address: str
-    description: str
-    seller: str
-    params: dict[str, str]
-    image_urls: list[str]
+    title: str | None = None
+    price: int | None = None
+    address: str | None = None
+    description: str | None = None
+    seller: str | None = None
+    params: dict[str, str] = Field(default_factory=dict)
+    image_urls: list[str] = Field(default_factory=list)
     error: str | None = None
 
 
-@app.get("/", summary="Simple GET endpoint")
+@app.get("/", summary="Health check")
 def read_root() -> dict[str, str]:
-    """Return a basic response for testing a GET request."""
-    return {"message": "GET request works"}
+    return {"message": "API works"}
 
 
-@app.get("/search", summary="GET endpoint with query parameters")
+@app.get("/search", summary="Test GET endpoint with query parameters")
 def search_items(
     query: Annotated[str, Query(min_length=1, description="Search text")],
     limit: Annotated[int, Query(ge=1, le=100, description="Maximum number of items")] = 10,
 ) -> dict[str, str | int]:
-    """Echo query parameters for testing GET requests with a query string."""
     return {
         "message": "GET request with query parameters works",
         "query": query,
@@ -133,10 +131,9 @@ def search_items(
     "/items",
     response_model=ItemResponse,
     status_code=status.HTTP_201_CREATED,
-    summary="POST endpoint",
+    summary="Test POST endpoint",
 )
 def create_item(item: ItemCreate) -> ItemResponse:
-    """Return the posted payload with a generated test ID."""
     return ItemResponse(id=1, **item.model_dump())
 
 
@@ -146,10 +143,22 @@ def create_item(item: ItemCreate) -> ItemResponse:
     summary="Parse PortalDA card",
 )
 def parse_portalda(payload: PortaldaParseRequest) -> dict:
-    """Parse a PortalDA card URL and return extracted listing data."""
-    from app.portalda_parser import parse_portalda_card
+    try:
+        # Если portalda_parser.py лежит рядом с app.py
+        from portalda_parser import parse_portalda_card
+    except ModuleNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_501_NOT_IMPLEMENTED,
+            detail="Файл portalda_parser.py не найден рядом с app.py",
+        ) from exc
 
-    return parse_portalda_card(str(payload.url))
+    try:
+        return parse_portalda_card(str(payload.url))
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"PortalDA parser failed: {exc}",
+        ) from exc
 
 
 @app.post(
@@ -158,8 +167,9 @@ def parse_portalda(payload: PortaldaParseRequest) -> dict:
     summary="Parse Avito listings",
 )
 def parse_avito(payload: AvitoParseRequest) -> list[dict]:
-    """Parse Avito search results by city, query, price range, category, and limits."""
-    from app.avito_parser import parse_avito_realty
+    # Исправлено: если avito_parser.py лежит рядом с app.py,
+    # импорт должен быть без префикса app.
+    from avito_parser import parse_avito_realty
 
     try:
         return parse_avito_realty(
@@ -173,6 +183,11 @@ def parse_avito(payload: AvitoParseRequest) -> list[dict]:
             headless=payload.headless,
             save_html=payload.save_html,
         )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=str(exc),
+        ) from exc
     except RuntimeError as exc:
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
