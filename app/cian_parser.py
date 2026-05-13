@@ -1,4 +1,5 @@
 import hashlib
+import html as html_lib
 import json
 import logging
 import random
@@ -212,6 +213,17 @@ def is_probably_blocked(html: str) -> bool:
     return any(marker in lowered for marker in markers)
 
 
+def clean_cian_href(href: str) -> str:
+    href = html_lib.unescape(href)
+    href = href.replace("\\/", "/")
+    href = href.replace("\\u002F", "/")
+    href = href.replace("\\u002f", "/")
+    href = href.strip().strip('"').strip("'")
+    href = href.split("?")[0]
+    href = href.split("#")[0]
+    return href
+
+
 class CianCrawler:
     def __init__(
         self,
@@ -291,18 +303,24 @@ class CianCrawler:
     @retryable
     def _load_search_page(self, url: str) -> str:
         self.page.goto(url, wait_until="domcontentloaded", timeout=60_000)
-        self.page.wait_for_timeout(3000)
+        self.page.wait_for_timeout(5000)
+
+        try:
+            self.page.wait_for_load_state("networkidle", timeout=15_000)
+        except Exception:
+            logger.warning("Network idle timeout, continue with current DOM")
 
         try:
             self.page.wait_for_selector(
-                "a[href*='/sale/flat/'], "
-                "a[href*='/sale/suburban/'], "
-                "a[href*='/sale/commercial/'], "
-                "a[href*='cian.ru/sale']",
+                "a[href*='/sale/'], "
+                "a[href*='/rent/'], "
+                "a[href*='cian.ru/sale'], "
+                "a[href*='cian.ru/rent'], "
+                "div[data-name='LinkArea']",
                 timeout=15_000,
             )
         except Exception:
-            logger.warning("No Cian listing links found, continue with page content")
+            logger.warning("No Cian listing links found by selector, continue with page content")
 
         return self.page.content()
 
@@ -312,24 +330,35 @@ class CianCrawler:
         urls = []
         seen = set()
 
-        selectors = [
-            "a[href*='/sale/flat/']",
-            "a[href*='/sale/suburban/']",
-            "a[href*='/sale/commercial/']",
-            "a[href*='/rent/flat/']",
-            "a[href*='/rent/commercial/']",
-            "a[href*='cian.ru/sale']",
-            "a[href*='cian.ru/rent']",
+        # 1. Сначала обычные ссылки из DOM.
+        for a in soup.select("a[href]"):
+            href = a.get("href")
+
+            if not href:
+                continue
+
+            url = self._normalize_cian_url(href)
+
+            if not url:
+                continue
+
+            if url not in seen:
+                seen.add(url)
+                urls.append(url)
+
+        # 2. Потом ссылки из SSR/JS-кусков.
+        regex_patterns = [
+            r"https://www\.cian\.ru/(?:sale|rent)/(?:flat|commercial|suburban)/\d+/?",
+            r"https:\\/\\/www\.cian\.ru\\/(?:sale|rent)\\/(?:flat|commercial|suburban)\\/\d+\\/?",
+            r"https:\\u002F\\u002Fwww\.cian\.ru\\u002F(?:sale|rent)\\u002F(?:flat|commercial|suburban)\\u002F\d+\\u002F?",
+            r"/(?:sale|rent)/(?:flat|commercial|suburban)/\d+/?",
+            r"\\/(?:sale|rent)\\/(?:flat|commercial|suburban)\\/\d+\\/?",
+            r"\\u002F(?:sale|rent)\\u002F(?:flat|commercial|suburban)\\u002F\d+\\u002F?",
         ]
 
-        for selector in selectors:
-            for a in soup.select(selector):
-                href = a.get("href")
-
-                if not href:
-                    continue
-
-                url = self._normalize_cian_url(href)
+        for pattern in regex_patterns:
+            for match in re.findall(pattern, html):
+                url = self._normalize_cian_url(match)
 
                 if not url:
                     continue
@@ -338,12 +367,14 @@ class CianCrawler:
                     seen.add(url)
                     urls.append(url)
 
-            if urls:
-                break
-
         return urls
 
     def _normalize_cian_url(self, href: str) -> str | None:
+        if not href:
+            return None
+
+        href = clean_cian_href(href)
+
         full_url = urljoin(CIAN_BASE_URL, href)
         parsed = urlparse(full_url)
 
@@ -352,10 +383,22 @@ class CianCrawler:
 
         path = parsed.path
 
+        allowed_parts = [
+            "/sale/flat/",
+            "/sale/commercial/",
+            "/sale/suburban/",
+            "/rent/flat/",
+            "/rent/commercial/",
+            "/rent/suburban/",
+        ]
+
+        if not any(part in path for part in allowed_parts):
+            return None
+
         if not re.search(r"/\d+/?$", path):
             return None
 
-        return f"https://www.cian.ru{path}"
+        return f"https://www.cian.ru{path.rstrip('/')}/"
 
 
 class CianCardParser:
@@ -413,7 +456,12 @@ class CianCardParser:
         logger.info("Open Cian card: %s", url)
 
         self.page.goto(url, wait_until="domcontentloaded", timeout=60_000)
-        self.page.wait_for_timeout(3500)
+        self.page.wait_for_timeout(4500)
+
+        try:
+            self.page.wait_for_load_state("networkidle", timeout=15_000)
+        except Exception:
+            logger.warning("Network idle timeout on Cian card, continue with current DOM")
 
         try:
             self.page.wait_for_selector("h1, [data-name='OfferTitle']", timeout=15_000)
