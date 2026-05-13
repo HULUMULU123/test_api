@@ -14,10 +14,11 @@ from playwright.sync_api import Page, sync_playwright
 
 
 AVITO_BASE_URL = "https://www.avito.ru"
-
 RAW_HTML_DIR = "raw_html"
 
-HEADLESS = False
+# Для локального ручного запуска можно поставить False.
+# Для FastAPI/сервера лучше True, иначе браузер может не стартовать без GUI.
+HEADLESS = True
 
 REQUEST_DELAY_MIN = 2.5
 REQUEST_DELAY_MAX = 6.0
@@ -47,9 +48,10 @@ class Listing:
     address: str | None = None
     description: str | None = None
     seller: str | None = None
-    params: dict = field(default_factory=dict)
+    params: dict[str, str] = field(default_factory=dict)
     images: list[str] = field(default_factory=list)
     raw_html_path: str | None = None
+    error: str | None = None
 
 
 def random_delay() -> None:
@@ -75,7 +77,6 @@ def retryable(fn):
                     fn.__name__,
                     exc,
                 )
-
                 time.sleep(sleep_time)
 
         raise last_error
@@ -108,7 +109,7 @@ def safe_filename_from_url(url: str) -> str:
     return f"{digest}.html"
 
 
-def save_raw_html(url: str, html: str, raw_dir: str) -> str:
+def save_raw_html(url: str, html: str, raw_dir: str = RAW_HTML_DIR) -> str:
     Path(raw_dir).mkdir(parents=True, exist_ok=True)
 
     path = Path(raw_dir) / safe_filename_from_url(url)
@@ -129,7 +130,7 @@ def build_search_url(
     category = category.strip().strip("/")
 
     query = {
-        "q": search_query,
+        "q": search_query.strip(),
         "pmin": price_min,
         "pmax": price_max,
     }
@@ -164,8 +165,8 @@ class AvitoCrawler:
         self.category = category
 
     def collect_listing_urls(self) -> list[str]:
-        result = []
-        seen = set()
+        result: list[str] = []
+        seen: set[str] = set()
 
         for page_num in range(1, self.max_pages + 1):
             if len(result) >= self.max_cards:
@@ -209,7 +210,10 @@ class AvitoCrawler:
         self.page.wait_for_timeout(2500)
 
         try:
-            self.page.wait_for_selector("a[href*='_']", timeout=10_000)
+            self.page.wait_for_selector(
+                "a[data-marker='item-title'], div[data-marker='item'] a[href], a[href*='_']",
+                timeout=10_000,
+            )
         except Exception:
             logger.warning("No listing links found, continue with page content")
 
@@ -218,8 +222,8 @@ class AvitoCrawler:
     def _extract_listing_urls(self, html: str) -> list[str]:
         soup = BeautifulSoup(html, "lxml")
 
-        urls = []
-        seen = set()
+        urls: list[str] = []
+        seen: set[str] = set()
 
         selectors = [
             "a[data-marker='item-title']",
@@ -258,6 +262,7 @@ class AvitoCrawler:
 
         path = parsed.path
 
+        # Карточки Avito обычно заканчиваются на _числовой_id.
         if not re.search(r"_\d+$", path):
             return None
 
@@ -298,6 +303,7 @@ class AvitoCardParser:
                 url=url,
                 params={},
                 images=[],
+                error=str(exc),
             )
 
         finally:
@@ -418,8 +424,8 @@ class AvitoCardParser:
             ],
         )
 
-    def _extract_params(self, soup: BeautifulSoup) -> dict:
-        params = {}
+    def _extract_params(self, soup: BeautifulSoup) -> dict[str, str]:
+        params: dict[str, str] = {}
 
         selectors = [
             "[data-marker='item-view/item-params'] li",
@@ -488,13 +494,16 @@ class AvitoCardParser:
             match = re.match(pattern, text, flags=re.IGNORECASE)
 
             if match:
-                return normalize_text(match.group(1)), normalize_text(match.group(2))
+                key = normalize_text(match.group(1))
+                value = normalize_text(match.group(2))
+                if key and value:
+                    return key, value
 
         return None
 
     def _extract_images(self, soup: BeautifulSoup) -> list[str]:
-        images = []
-        seen = set()
+        images: list[str] = []
+        seen: set[str] = set()
 
         for img in soup.select("img"):
             candidates = [
@@ -526,13 +535,14 @@ class AvitoCardParser:
         image_data = json_ld.get("image") if json_ld else None
 
         if isinstance(image_data, str) and image_data not in seen:
+            seen.add(image_data)
             images.append(image_data)
 
         elif isinstance(image_data, list):
             for image_url in image_data:
                 if isinstance(image_url, str) and image_url not in seen:
-                    images.append(image_url)
                     seen.add(image_url)
+                    images.append(image_url)
 
         return images
 
@@ -567,29 +577,14 @@ def parse_avito_realty(
     headless: bool = HEADLESS,
     save_html: bool = True,
 ) -> list[dict]:
-    """
-    Основная функция парсера.
-
-    Args:
-        price_min: минимальная цена.
-        price_max: максимальная цена.
-        city: город в формате Avito, например: "moskva", "habarovsk".
-        search_query: поисковая строка, например: "квартира", "склад", "торговый центр".
-        max_items: сколько карточек нужно распарсить.
-        max_pages: сколько страниц поиска просмотреть.
-        category: категория Avito. По умолчанию "nedvizhimost".
-        headless: запуск браузера без интерфейса.
-        save_html: сохранять HTML карточек в raw_html.
-
-    Returns:
-        Список dict, пригодный для JSON-сериализации.
-    """
-
     if not city or not city.strip():
         raise ValueError("city не может быть пустым")
 
     if not search_query or not search_query.strip():
         raise ValueError("search_query не может быть пустым")
+
+    if price_min is not None and price_max is not None and price_min > price_max:
+        raise ValueError("price_min не может быть больше price_max")
 
     if max_items <= 0:
         return []
@@ -597,60 +592,68 @@ def parse_avito_realty(
     listings: list[dict] = []
 
     with sync_playwright() as p:
-        browser = p.chromium.launch(
-            headless=headless,
-            args=[
-                "--disable-blink-features=AutomationControlled",
-            ],
-        )
+        browser = None
+        context = None
 
-        context = browser.new_context(
-            user_agent=USER_AGENT,
-            viewport={"width": 1366, "height": 768},
-            locale="ru-RU",
-            timezone_id="Europe/Moscow",
-        )
-
-        page = context.new_page()
-
-        crawler = AvitoCrawler(
-            page=page,
-            city=city,
-            search_query=search_query,
-            price_min=price_min,
-            price_max=price_max,
-            max_pages=max_pages,
-            max_cards=max_items,
-            category=category,
-        )
-
-        parser = AvitoCardParser(
-            page=page,
-            save_html=save_html,
-        )
-
-        urls = crawler.collect_listing_urls()
-
-        logger.info("Total collected URLs: %s", len(urls))
-
-        for index, url in enumerate(urls, start=1):
-            logger.info("Parse card %s/%s", index, len(urls))
-
-            listing = parser.parse_listing(url)
-            listings.append(asdict(listing))
-
-            logger.info(
-                "Parsed: title=%r price=%r url=%s",
-                listing.title,
-                listing.price,
-                listing.url,
+        try:
+            browser = p.chromium.launch(
+                headless=headless,
+                args=[
+                    "--disable-blink-features=AutomationControlled",
+                    "--no-sandbox",
+                    "--disable-dev-shm-usage",
+                ],
             )
 
-            if len(listings) >= max_items:
-                break
+            context = browser.new_context(
+                user_agent=USER_AGENT,
+                viewport={"width": 1366, "height": 768},
+                locale="ru-RU",
+                timezone_id="Europe/Moscow",
+            )
 
-        context.close()
-        browser.close()
+            page = context.new_page()
+
+            crawler = AvitoCrawler(
+                page=page,
+                city=city,
+                search_query=search_query,
+                price_min=price_min,
+                price_max=price_max,
+                max_pages=max_pages,
+                max_cards=max_items,
+                category=category,
+            )
+
+            parser = AvitoCardParser(
+                page=page,
+                save_html=save_html,
+            )
+
+            urls = crawler.collect_listing_urls()
+            logger.info("Total collected URLs: %s", len(urls))
+
+            for index, url in enumerate(urls, start=1):
+                logger.info("Parse card %s/%s", index, len(urls))
+
+                listing = parser.parse_listing(url)
+                listings.append(asdict(listing))
+
+                logger.info(
+                    "Parsed: title=%r price=%r url=%s",
+                    listing.title,
+                    listing.price,
+                    listing.url,
+                )
+
+                if len(listings) >= max_items:
+                    break
+
+        finally:
+            if context is not None:
+                context.close()
+            if browser is not None:
+                browser.close()
 
     return listings
 
