@@ -1,5 +1,4 @@
 import hashlib
-import html as html_lib
 import json
 import logging
 import random
@@ -15,10 +14,10 @@ from playwright.sync_api import Page, sync_playwright
 
 
 CIAN_BASE_URL = "https://www.cian.ru"
-RAW_HTML_DIR = "raw_html_cian"
-DEBUG_HTML_DIR = "debug_html_cian"
 
-HEADLESS = True
+RAW_HTML_DIR = "raw_html_cian"
+
+HEADLESS = False
 
 REQUEST_DELAY_MIN = 2.5
 REQUEST_DELAY_MAX = 6.0
@@ -63,7 +62,6 @@ class Listing:
     params: dict = field(default_factory=dict)
     images: list[str] = field(default_factory=list)
     raw_html_path: str | None = None
-    error: str | None = None
 
 
 def random_delay() -> None:
@@ -122,7 +120,7 @@ def safe_filename_from_url(url: str) -> str:
     return f"{digest}.html"
 
 
-def save_raw_html(url: str, html: str, raw_dir: str = RAW_HTML_DIR) -> str:
+def save_raw_html(url: str, html: str, raw_dir: str) -> str:
     Path(raw_dir).mkdir(parents=True, exist_ok=True)
 
     path = Path(raw_dir) / safe_filename_from_url(url)
@@ -136,41 +134,6 @@ def normalize_city(city: str) -> str:
     return CITY_SLUGS.get(city, city)
 
 
-def detect_offer_type(search_query: str) -> str:
-    query = (search_query or "").lower()
-
-    commercial_keywords = [
-        "склад",
-        "офис",
-        "помещение",
-        "магазин",
-        "торговый",
-        "торговое",
-        "производство",
-        "ангар",
-        "база",
-        "псн",
-        "коммерция",
-        "коммерческая",
-    ]
-
-    suburban_keywords = [
-        "дом",
-        "коттедж",
-        "дача",
-        "таунхаус",
-        "участок",
-    ]
-
-    if any(word in query for word in commercial_keywords):
-        return "commercial"
-
-    if any(word in query for word in suburban_keywords):
-        return "suburban"
-
-    return "flat"
-
-
 def build_search_url(
     city: str,
     search_query: str,
@@ -179,12 +142,11 @@ def build_search_url(
     page: int = 1,
 ) -> str:
     city_slug = normalize_city(city)
-    offer_type = detect_offer_type(search_query)
 
     query = {
         "deal_type": "sale",
         "engine_version": 2,
-        "offer_type": offer_type,
+        "offer_type": "flat",
         "region": city_slug,
         "minprice": price_min,
         "maxprice": price_max,
@@ -195,33 +157,6 @@ def build_search_url(
     query = {k: v for k, v in query.items() if v not in (None, "")}
 
     return f"{CIAN_BASE_URL}/cat.php?{urlencode(query)}"
-
-
-def is_probably_blocked(html: str) -> bool:
-    lowered = html.lower()
-
-    markers = [
-        "captcha",
-        "капча",
-        "доступ ограничен",
-        "подтвердите",
-        "подозрительная активность",
-        "checking your browser",
-        "are you human",
-    ]
-
-    return any(marker in lowered for marker in markers)
-
-
-def clean_cian_href(href: str) -> str:
-    href = html_lib.unescape(href)
-    href = href.replace("\\/", "/")
-    href = href.replace("\\u002F", "/")
-    href = href.replace("\\u002f", "/")
-    href = href.strip().strip('"').strip("'")
-    href = href.split("?")[0]
-    href = href.split("#")[0]
-    return href
 
 
 class CianCrawler:
@@ -236,8 +171,8 @@ class CianCrawler:
         max_cards: int,
     ):
         self.page = page
-        self.city = city.strip().strip("/")
-        self.search_query = search_query.strip()
+        self.city = city
+        self.search_query = search_query
         self.price_min = price_min
         self.price_max = price_max
         self.max_pages = max_pages
@@ -246,14 +181,6 @@ class CianCrawler:
     def collect_listing_urls(self) -> list[str]:
         result = []
         seen = set()
-
-        logger.info(
-            "Cian search started: city=%s query=%r price_min=%r price_max=%r",
-            self.city,
-            self.search_query,
-            self.price_min,
-            self.price_max,
-        )
 
         for page_num in range(1, self.max_pages + 1):
             if len(result) >= self.max_cards:
@@ -271,19 +198,9 @@ class CianCrawler:
 
             try:
                 html = self._load_search_page(search_url)
-
-                if is_probably_blocked(html):
-                    path = save_raw_html(search_url, html, DEBUG_HTML_DIR)
-                    logger.warning("Cian probably blocked request. Debug HTML: %s", path)
-                    break
-
                 urls = self._extract_listing_urls(html)
 
                 logger.info("Found %s URLs on page %s", len(urls), page_num)
-
-                if not urls:
-                    path = save_raw_html(search_url, html, DEBUG_HTML_DIR)
-                    logger.warning("No Cian URLs found. Debug HTML: %s", path)
 
                 for url in urls:
                     if url not in seen:
@@ -294,7 +211,7 @@ class CianCrawler:
                         break
 
             except Exception as exc:
-                logger.exception("Failed to process Cian search page %s: %s", page_num, exc)
+                logger.exception("Failed to process search page %s: %s", page_num, exc)
 
             random_delay()
 
@@ -303,24 +220,12 @@ class CianCrawler:
     @retryable
     def _load_search_page(self, url: str) -> str:
         self.page.goto(url, wait_until="domcontentloaded", timeout=60_000)
-        self.page.wait_for_timeout(5000)
+        self.page.wait_for_timeout(3000)
 
         try:
-            self.page.wait_for_load_state("networkidle", timeout=15_000)
+            self.page.wait_for_selector("a[href*='/sale/flat/']", timeout=15_000)
         except Exception:
-            logger.warning("Network idle timeout, continue with current DOM")
-
-        try:
-            self.page.wait_for_selector(
-                "a[href*='/sale/'], "
-                "a[href*='/rent/'], "
-                "a[href*='cian.ru/sale'], "
-                "a[href*='cian.ru/rent'], "
-                "div[data-name='LinkArea']",
-                timeout=15_000,
-            )
-        except Exception:
-            logger.warning("No Cian listing links found by selector, continue with page content")
+            logger.warning("No Cian listing links found, continue with page content")
 
         return self.page.content()
 
@@ -330,35 +235,21 @@ class CianCrawler:
         urls = []
         seen = set()
 
-        # 1. Сначала обычные ссылки из DOM.
-        for a in soup.select("a[href]"):
-            href = a.get("href")
-
-            if not href:
-                continue
-
-            url = self._normalize_cian_url(href)
-
-            if not url:
-                continue
-
-            if url not in seen:
-                seen.add(url)
-                urls.append(url)
-
-        # 2. Потом ссылки из SSR/JS-кусков.
-        regex_patterns = [
-            r"https://www\.cian\.ru/(?:sale|rent)/(?:flat|commercial|suburban)/\d+/?",
-            r"https:\\/\\/www\.cian\.ru\\/(?:sale|rent)\\/(?:flat|commercial|suburban)\\/\d+\\/?",
-            r"https:\\u002F\\u002Fwww\.cian\.ru\\u002F(?:sale|rent)\\u002F(?:flat|commercial|suburban)\\u002F\d+\\u002F?",
-            r"/(?:sale|rent)/(?:flat|commercial|suburban)/\d+/?",
-            r"\\/(?:sale|rent)\\/(?:flat|commercial|suburban)\\/\d+\\/?",
-            r"\\u002F(?:sale|rent)\\u002F(?:flat|commercial|suburban)\\u002F\d+\\u002F?",
+        selectors = [
+            "a[href*='/sale/flat/']",
+            "a[href*='/sale/suburban/']",
+            "a[href*='/rent/flat/']",
+            "a[href*='cian.ru/sale']",
         ]
 
-        for pattern in regex_patterns:
-            for match in re.findall(pattern, html):
-                url = self._normalize_cian_url(match)
+        for selector in selectors:
+            for a in soup.select(selector):
+                href = a.get("href")
+
+                if not href:
+                    continue
+
+                url = self._normalize_cian_url(href)
 
                 if not url:
                     continue
@@ -367,14 +258,12 @@ class CianCrawler:
                     seen.add(url)
                     urls.append(url)
 
+            if urls:
+                break
+
         return urls
 
     def _normalize_cian_url(self, href: str) -> str | None:
-        if not href:
-            return None
-
-        href = clean_cian_href(href)
-
         full_url = urljoin(CIAN_BASE_URL, href)
         parsed = urlparse(full_url)
 
@@ -383,22 +272,10 @@ class CianCrawler:
 
         path = parsed.path
 
-        allowed_parts = [
-            "/sale/flat/",
-            "/sale/commercial/",
-            "/sale/suburban/",
-            "/rent/flat/",
-            "/rent/commercial/",
-            "/rent/suburban/",
-        ]
-
-        if not any(part in path for part in allowed_parts):
-            return None
-
         if not re.search(r"/\d+/?$", path):
             return None
 
-        return f"https://www.cian.ru{path.rstrip('/')}/"
+        return f"https://www.cian.ru{path}"
 
 
 class CianCardParser:
@@ -414,15 +291,6 @@ class CianCardParser:
             if self.save_html:
                 raw_path = save_raw_html(url, html, RAW_HTML_DIR)
 
-            if is_probably_blocked(html):
-                return Listing(
-                    url=url,
-                    params={},
-                    images=[],
-                    raw_html_path=raw_path,
-                    error="Cian probably returned captcha or anti-bot page",
-                )
-
             soup = BeautifulSoup(html, "lxml")
 
             return Listing(
@@ -435,17 +303,15 @@ class CianCardParser:
                 params=self._extract_params(soup),
                 images=self._extract_images(soup),
                 raw_html_path=raw_path,
-                error=None,
             )
 
         except Exception as exc:
-            logger.exception("Failed to parse Cian card %s: %s", url, exc)
+            logger.exception("Failed to parse card %s: %s", url, exc)
 
             return Listing(
                 url=url,
                 params={},
                 images=[],
-                error=str(exc),
             )
 
         finally:
@@ -453,20 +319,15 @@ class CianCardParser:
 
     @retryable
     def _load_card(self, url: str) -> str:
-        logger.info("Open Cian card: %s", url)
+        logger.info("Open card: %s", url)
 
         self.page.goto(url, wait_until="domcontentloaded", timeout=60_000)
-        self.page.wait_for_timeout(4500)
+        self.page.wait_for_timeout(3500)
 
         try:
-            self.page.wait_for_load_state("networkidle", timeout=15_000)
+            self.page.wait_for_selector("h1", timeout=15_000)
         except Exception:
-            logger.warning("Network idle timeout on Cian card, continue with current DOM")
-
-        try:
-            self.page.wait_for_selector("h1, [data-name='OfferTitle']", timeout=15_000)
-        except Exception:
-            logger.warning("Cian card title selector not found: %s", url)
+            logger.warning("Card title selector not found: %s", url)
 
         return self.page.content()
 
@@ -506,7 +367,6 @@ class CianCardParser:
             "[data-name='OfferPrice']",
             "[class*='Price']",
             "span[itemprop='price']",
-            "meta[itemprop='price']",
         ]
 
         for selector in selectors:
@@ -515,13 +375,7 @@ class CianCardParser:
             if not node:
                 continue
 
-            content = (
-                node.get("content")
-                or node.get("value")
-                or node.get("aria-label")
-                or node.get_text(" ", strip=True)
-            )
-
+            content = node.get("content") or node.get_text(" ", strip=True)
             price = parse_price(content)
 
             if price:
@@ -642,15 +496,12 @@ class CianCardParser:
             r"^(Жилая площадь)\s+(.+)$",
             r"^(Площадь кухни)\s+(.+)$",
             r"^(Площадь)\s+(.+)$",
-            r"^(Площадь помещения)\s+(.+)$",
             r"^(Этаж)\s+(.+)$",
             r"^(Комнат)\s+(.+)$",
             r"^(Количество комнат)\s+(.+)$",
             r"^(Санузел)\s+(.+)$",
             r"^(Ремонт)\s+(.+)$",
             r"^(Тип дома)\s+(.+)$",
-            r"^(Тип помещения)\s+(.+)$",
-            r"^(Класс здания)\s+(.+)$",
             r"^(Год постройки)\s+(.+)$",
             r"^(Высота потолков)\s+(.+)$",
         ]
@@ -659,11 +510,7 @@ class CianCardParser:
             match = re.match(pattern, text, flags=re.IGNORECASE)
 
             if match:
-                key = normalize_text(match.group(1))
-                value = normalize_text(match.group(2))
-
-                if key and value:
-                    return key, value
+                return normalize_text(match.group(1)), normalize_text(match.group(2))
 
         compact_patterns = {
             "Общая площадь": r"(\d+[,.]?\d*)\s*м²",
@@ -753,88 +600,88 @@ def parse_cian_realty(
     headless: bool = HEADLESS,
     save_html: bool = True,
 ) -> list[dict]:
+    """
+    Основная функция парсера Циана.
+
+    Args:
+        price_min: минимальная цена.
+        price_max: максимальная цена.
+        city: город, например: "moskva", "habarovsk", "spb".
+        search_query: поисковая строка, например: "квартира", "студия", "апартаменты".
+        max_items: сколько карточек нужно распарсить.
+        max_pages: сколько страниц поиска просмотреть.
+        headless: запуск браузера без интерфейса.
+        save_html: сохранять HTML карточек в raw_html_cian.
+
+    Returns:
+        Список dict, пригодный для JSON-сериализации.
+    """
+
     if not city or not city.strip():
         raise ValueError("city не может быть пустым")
 
     if not search_query or not search_query.strip():
         raise ValueError("search_query не может быть пустым")
 
-    if price_min is not None and price_max is not None and price_min > price_max:
-        raise ValueError("price_min не может быть больше price_max")
-
     if max_items <= 0:
         return []
 
     listings: list[dict] = []
 
-    browser = None
-    context = None
-
     with sync_playwright() as p:
-        try:
-            browser = p.chromium.launch(
-                headless=headless,
-                args=[
-                    "--disable-blink-features=AutomationControlled",
-                    "--no-sandbox",
-                    "--disable-dev-shm-usage",
-                ],
+        browser = p.chromium.launch(
+            headless=headless,
+            args=[
+                "--disable-blink-features=AutomationControlled",
+            ],
+        )
+
+        context = browser.new_context(
+            user_agent=USER_AGENT,
+            viewport={"width": 1366, "height": 768},
+            locale="ru-RU",
+            timezone_id="Europe/Moscow",
+        )
+
+        page = context.new_page()
+
+        crawler = CianCrawler(
+            page=page,
+            city=city,
+            search_query=search_query,
+            price_min=price_min,
+            price_max=price_max,
+            max_pages=max_pages,
+            max_cards=max_items,
+        )
+
+        parser = CianCardParser(
+            page=page,
+            save_html=save_html,
+        )
+
+        urls = crawler.collect_listing_urls()
+
+        logger.info("Total collected URLs: %s", len(urls))
+
+        for index, url in enumerate(urls, start=1):
+            logger.info("Parse card %s/%s", index, len(urls))
+
+            listing = parser.parse_listing(url)
+            listings.append(asdict(listing))
+
+            logger.info(
+                "Parsed: title=%r price=%r url=%s",
+                listing.title,
+                listing.price,
+                listing.url,
             )
 
-            context = browser.new_context(
-                user_agent=USER_AGENT,
-                viewport={"width": 1366, "height": 768},
-                locale="ru-RU",
-                timezone_id="Europe/Moscow",
-                extra_http_headers={
-                    "Accept-Language": "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7",
-                },
-            )
+            if len(listings) >= max_items:
+                break
 
-            page = context.new_page()
-
-            crawler = CianCrawler(
-                page=page,
-                city=city,
-                search_query=search_query,
-                price_min=price_min,
-                price_max=price_max,
-                max_pages=max_pages,
-                max_cards=max_items,
-            )
-
-            parser = CianCardParser(
-                page=page,
-                save_html=save_html,
-            )
-
-            urls = crawler.collect_listing_urls()
-
-            logger.info("Total collected Cian URLs: %s", len(urls))
-
-            for index, url in enumerate(urls, start=1):
-                logger.info("Parse Cian card %s/%s", index, len(urls))
-
-                listing = parser.parse_listing(url)
-                listings.append(asdict(listing))
-
-                logger.info(
-                    "Parsed Cian: title=%r price=%r url=%s error=%r",
-                    listing.title,
-                    listing.price,
-                    listing.url,
-                    listing.error,
-                )
-
-                if len(listings) >= max_items:
-                    break
-
-        finally:
-            if context is not None:
-                context.close()
-
-            if browser is not None:
-                browser.close()
+        context.close()
+        browser.close()
 
     return listings
 
