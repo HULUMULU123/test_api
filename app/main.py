@@ -335,36 +335,10 @@ def parse_cian(payload: CianParseRequest) -> list[dict]:
         ) from exc
     
 
-@app.post(
-    "/farpost/parse",
-    response_model=list[CianListingResponse],
-    summary="Parse farpost listings",
-)
-def parse_cian(payload: CianParseRequest) -> list[dict]:
-    from .farpost_parser import parse_farpost_realty
-
-    try:
-        return parse_farpost_realty(
-            price_min=payload.price_min,
-            price_max=payload.price_max,
-            city=payload.city,
-            search_query=payload.search_query,
-            max_items=payload.max_items,
-            headless=payload.headless,
-        )
-    except ValueError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail=str(exc),
-        ) from exc
-    except RuntimeError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=str(exc),
-        ) from exc
-    except Exception as exc:
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=f"Cian parser failed: {exc}",
-        ) from exc
-    
+class Kad(BaseModel):
+    cad_number: str
+@app.post("/cadastral/parse")
+async def parse_kad(payload: Kad):
+    from kadastr import parse_cadastral
+    result = await parse_cadastral(payload.cad_number)  
+    return result
