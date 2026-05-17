@@ -8,6 +8,7 @@ Small FastAPI application for testing common request types and parsing PortalDA 
 - `POST /portalda/parse` — accepts a PortalDA listing URL and returns parsed listing data.
 - `POST /avito/parse` — accepts Avito search parameters and returns parsed listing data.
 - `POST /cian/parse` — accepts Cian search parameters and returns parsed listing data.
+- `POST /cadastral/parse` — accepts a cadastral number and returns parsed NSPD object data with a base64 map screenshot.
 
 ## Run locally
 
@@ -75,6 +76,27 @@ curl -X POST http://127.0.0.1:8000/avito/parse \
 ```
 
 The response is an array of listings with URL, title, price, address, description, seller, parsed parameters, image URLs, and optional raw HTML path.
+
+
+Parse NSPD cadastral object by cadastral number:
+
+JSON body for testing `POST /cadastral/parse`:
+
+```json
+{
+  "cad_number": "27:09:0000103:1627"
+}
+```
+
+The parser uses the provided Playwright flow for the NSPD map, searches the cadastral number, collects object attributes, zooms the map out three times, takes a map screenshot, and returns that screenshot in the JSON response as a base64-encoded PNG string in the `screenshot` field. Because the parser launches Chromium with `headless=False`, run the API in an environment with a configured display, for example through `xvfb-run`.
+
+The same payload is available in `examples/cadastral_parse_request.json`, so you can test it with curl:
+
+```bash
+curl -X POST http://127.0.0.1:8000/cadastral/parse \
+  -H "Content-Type: application/json" \
+  --data @examples/cadastral_parse_request.json
+```
 
 
 Parse Cian listings by search parameters:

@@ -137,6 +137,27 @@ class CianParseRequest(BaseModel):
         return self
 
 
+class CadastralParseRequest(BaseModel):
+    cad_number: str = Field(
+        ...,
+        min_length=1,
+        examples=["27:09:0000103:1627"],
+        description="Cadastral number to search on NSPD map",
+    )
+
+
+class CadastralInfoItem(BaseModel):
+    header: str | None = None
+    value: str | None = None
+
+
+class CadastralParseResponse(BaseModel):
+    cad_number: str
+    found: bool
+    objects_info: list[list[CadastralInfoItem]] = Field(default_factory=list)
+    screenshot: str = Field(description="Map screenshot encoded as base64 PNG")
+
+
 class AvitoListingResponse(BaseModel):
     url: str
     title: str | None = None
@@ -200,6 +221,28 @@ def search_items(
 )
 def create_item(item: ItemCreate) -> ItemResponse:
     return ItemResponse(id=1, **item.model_dump())
+
+
+@app.post(
+    "/cadastral/parse",
+    response_model=CadastralParseResponse,
+    summary="Parse cadastral object from NSPD map",
+)
+async def parse_cadastral_endpoint(payload: CadastralParseRequest) -> dict:
+    from .cadastral_parser import parse_cadastral
+
+    try:
+        return await parse_cadastral(payload.cad_number)
+    except RuntimeError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=str(exc),
+        ) from exc
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Cadastral parser failed: {exc}",
+        ) from exc
 
 
 @app.post(
