@@ -18,10 +18,7 @@ URL = (
 async def parse_cadastral(cad_number: str):
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=False)
-        context = await browser.new_context(
-            viewport={"width": 1600, "height": 900},
-            ignore_https_errors=True
-        )
+        context = await browser.new_context(viewport={"width": 1600, "height": 900})
         page = await context.new_page()
 
         await page.goto(URL, wait_until="networkidle", timeout=120000)
@@ -112,3 +109,13 @@ async def parse_cadastral(cad_number: str):
 
         await browser.close()
         return result
+
+
+async def main():
+    cad_number = "27:09:0000103:1627"
+    result = await parse_cadastral(cad_number)
+    print(json.dumps(result, indent=2, ensure_ascii=False))
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
