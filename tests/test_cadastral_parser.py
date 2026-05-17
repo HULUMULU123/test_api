@@ -1,7 +1,13 @@
 import unittest
 from unittest.mock import AsyncMock, patch
 
+from app import cadastral_parser
 from app.main import CadastralParseRequest, parse_cadastral_endpoint
+
+
+class CadastralParserSettingsTests(unittest.TestCase):
+    def test_browser_context_ignores_https_certificate_errors(self) -> None:
+        self.assertTrue(cadastral_parser.BROWSER_CONTEXT_OPTIONS["ignore_https_errors"])
 
 
 class CadastralEndpointTests(unittest.IsolatedAsyncioTestCase):
