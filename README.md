@@ -88,7 +88,7 @@ JSON body for testing `POST /cadastral/parse`:
 }
 ```
 
-The parser uses the provided Playwright flow for the NSPD map, searches the cadastral number, collects object attributes, zooms the map out three times, takes a map screenshot, and returns that screenshot in the JSON response as a base64-encoded PNG string in the `screenshot` field. Because the parser launches Chromium with `headless=False`, run the API in an environment with a configured display, for example through `xvfb-run`.
+The parser uses the provided Playwright flow for the NSPD map, searches the cadastral number, collects object attributes, zooms the map out three times, takes a map screenshot, and returns that screenshot in the JSON response as a base64-encoded PNG string in the `screenshot` field. Chromium runs in headless mode and the Playwright browser context ignores HTTPS certificate validation errors so temporary or environment-specific NSPD certificate chain issues do not fail navigation.
 
 The same payload is available in `examples/cadastral_parse_request.json`, so you can test it with curl:
 

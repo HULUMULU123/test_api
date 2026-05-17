@@ -3,6 +3,15 @@ import base64
 from playwright.async_api import async_playwright
 
 
+BROWSER_CONTEXT_OPTIONS = {
+    "viewport": {"width": 1600, "height": 900},
+    # NSPD can serve an incomplete/untrusted certificate chain in some
+    # environments, so allow Playwright to continue instead of failing at
+    # page.goto with net::ERR_CERT_AUTHORITY_INVALID.
+    "ignore_https_errors": True,
+}
+
+
 URL = (
     "https://nspd.gov.ru/map"
     "?thematic=PKK"
@@ -19,7 +28,7 @@ URL = (
 async def parse_cadastral(cad_number: str):
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
-        context = await browser.new_context(viewport={"width": 1600, "height": 900})
+        context = await browser.new_context(**BROWSER_CONTEXT_OPTIONS)
         page = await context.new_page()
 
         await page.goto(URL, wait_until="networkidle", timeout=120000)
