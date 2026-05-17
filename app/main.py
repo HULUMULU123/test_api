@@ -339,6 +339,6 @@ class Kad(BaseModel):
     cad_number: str
 @app.post("/cadastral/parse")
 async def parse_kad(payload: Kad):
-    from kadastr import parse_cadastral
+    from cadastral_parser import parse_cadastral
     result = await parse_cadastral(payload.cad_number)  
     return result
