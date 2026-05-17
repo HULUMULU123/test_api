@@ -1,16 +1,7 @@
+import asyncio
+import json
 import base64
-
 from playwright.async_api import async_playwright
-
-
-BROWSER_CONTEXT_OPTIONS = {
-    "viewport": {"width": 1600, "height": 900},
-    # NSPD can serve an incomplete/untrusted certificate chain in some
-    # environments, so allow Playwright to continue instead of failing at
-    # page.goto with net::ERR_CERT_AUTHORITY_INVALID.
-    "ignore_https_errors": True,
-}
-
 
 URL = (
     "https://nspd.gov.ru/map"
@@ -27,8 +18,17 @@ URL = (
 
 async def parse_cadastral(cad_number: str):
     async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=True)
-        context = await browser.new_context(**BROWSER_CONTEXT_OPTIONS)
+        browser = await p.chromium.launch(
+            headless=True,
+            args=[
+                "--disable-gpu",
+                "--no-sandbox",
+                "--disable-software-rasterizer",
+                "--use-gl=egl",
+                "--enable-webgl"
+            ]
+        )
+        context = await browser.new_context(viewport={"width": 1600, "height": 900})
         page = await context.new_page()
 
         await page.goto(URL, wait_until="networkidle", timeout=120000)
@@ -96,22 +96,30 @@ async def parse_cadastral(cad_number: str):
 
                 all_objects_info.append(parsed_info)
 
-        # --- уменьшение масштаба карты 3 раза ---
-        zoom_out_button = page.locator(
-            'm-tooltip[content="Уменьшить масштаб карты"] m-button'
-        ).first
-
-        for _ in range(3):
-            await zoom_out_button.click()
-            await page.wait_for_timeout(500)  # ждём анимацию
+        # --- уменьшение масштаба карты 3 раза через JS ---
+        await page.evaluate("""
+            () => {
+                const mapEl = document.querySelector('.ol-viewport');
+                if (!mapEl) return;
+                const map = window.map || window.olMap; 
+                if (!map || !map.getView) return;
+                const view = map.getView();
+                if (!view) return;
+                for (let i=0; i<3; i++) {
+                    const z = view.getZoom();
+                    view.setZoom(Math.max(z - 1, 0));
+                }
+            }
+        """)
+        await page.wait_for_timeout(3000)  # ждём перерисовку
 
         # --- скрин карты ---
-        await page.wait_for_timeout(1500)
         screenshot_path = f"map_screenshot_{cad_number.replace(':','_')}.png"
         await page.screenshot(path=screenshot_path, full_page=True)
 
-        with open(screenshot_path, "rb") as screenshot_file:
-            screenshot_base64 = base64.b64encode(screenshot_file.read()).decode("ascii")
+        # кодируем в base64 для передачи через API
+        with open(screenshot_path, "rb") as f:
+            screenshot_base64 = base64.b64encode(f.read()).decode("ascii")
 
         result = {
             "cad_number": cad_number,
@@ -122,3 +130,13 @@ async def parse_cadastral(cad_number: str):
 
         await browser.close()
         return result
+
+
+async def main():
+    cad_number = "77:01:0004012:3456"
+    result = await parse_cadastral(cad_number)
+    print(json.dumps(result, indent=2, ensure_ascii=False))
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
