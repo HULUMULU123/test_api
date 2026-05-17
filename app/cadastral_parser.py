@@ -28,7 +28,10 @@ async def parse_cadastral(cad_number: str):
                 "--enable-webgl"
             ]
         )
-        context = await browser.new_context(viewport={"width": 1600, "height": 900})
+        context = await browser.new_context(
+            viewport={"width": 1600, "height": 900},
+            ignore_https_errors=True  # игнорируем ошибки сертификата
+        )
         page = await context.new_page()
 
         await page.goto(URL, wait_until="networkidle", timeout=120000)
@@ -132,6 +135,7 @@ async def parse_cadastral(cad_number: str):
         return result
 
 
+# пример запуска
 async def main():
     cad_number = "77:01:0004012:3456"
     result = await parse_cadastral(cad_number)
