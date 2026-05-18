@@ -19,15 +19,24 @@ async def parse_cadastral(cad_number: str):
     async with async_playwright() as p:
         # Chromium с аргументами для Linux/Xvfb/WebGL
         browser = await p.chromium.launch(
-            headless=False,  # False для рендера через Xvfb
+            headless=False,             # обязательно headful
             args=[
-                "--disable-dev-shm-usage",
                 "--no-sandbox",
+                "--disable-setuid-sandbox",
+                "--disable-gpu",
                 "--disable-software-rasterizer",
-                "--disable-gpu"
-            ],
+                "--disable-dev-shm-usage",
+                "--ignore-certificate-errors",
+                "--disable-features=VizDisplayCompositor"
+            ]
         )
-        context = await browser.new_context(viewport={"width": 1600, "height": 900}, ignore_https_errors=True)
+        
+        context = await browser.new_context(
+            viewport={"width":1600,"height":900},
+            ignore_https_errors=True,
+            java_script_enabled=True
+        )
+        
         page = await context.new_page()
 
         await page.goto(URL, wait_until="networkidle", timeout=120000)
