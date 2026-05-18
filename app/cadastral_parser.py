@@ -17,61 +17,38 @@ URL = (
 
 async def parse_cadastral(cad_number: str):
     async with async_playwright() as p:
-        # Chromium с аргументами для Linux/Xvfb/WebGL
-        browser = await p.chromium.launch(
-            headless=False,             # обязательно headful
-            args=[
-                "--no-sandbox",
-                "--disable-setuid-sandbox",
-                "--disable-gpu",
-                "--disable-software-rasterizer",
-                "--disable-dev-shm-usage",
-                "--ignore-certificate-errors",
-                "--disable-features=VizDisplayCompositor"
-            ]
-        )
-        
+        browser = await p.chromium.launch(headless=False)
         context = await browser.new_context(
             viewport={"width":1600,"height":900},
             ignore_https_errors=True,
             java_script_enabled=True
         )
-        
         page = await context.new_page()
 
         await page.goto(URL, wait_until="networkidle", timeout=120000)
 
-        # --- ждём появления поля поиска ---
-        await page.wait_for_selector("m-input input", timeout=60000)
-        input_handle = await page.evaluate_handle(
-            """() => document.querySelector('m-input').shadowRoot.querySelector('input')"""
-        )
-        await input_handle.type(cad_number)
+        # --- поиск кадастра ---
+        input_field = page.locator("label.input-label input")
+        await input_field.wait_for(timeout=30000)
+        await input_field.click()
+        await input_field.fill(cad_number)
         await page.keyboard.press("Enter")
 
-        # --- ждём suggestion и кликаем ---
+        # клик по suggestion, если есть
         try:
             suggestion = page.locator("m-search-hints li").first
-            await suggestion.wait_for(timeout=10000)
+            await suggestion.wait_for(timeout=5000)
             await suggestion.click()
         except:
             pass
 
-        # --- ждём рендера карты (canvas с пикселями) ---
-        await page.wait_for_function("""
-        () => {
-            const canvas = document.querySelector('canvas.leaflet-layer');
-            if (!canvas) return false;
-            const ctx = canvas.getContext('2d');
-            return ctx && ctx.getImageData(0,0,1,1).data[3] !== 0;
-        }
-        """, timeout=60000)
+        await page.wait_for_timeout(5000)  # ждём рендер объектов
 
-        # --- открыть аккордеон с объектами ---
+        # --- открыть аккордеон ---
         accordion = page.locator("div.accordion.open").first
         await accordion.wait_for(timeout=10000)
 
-        # --- собираем объекты ---
+        # --- собираем все кнопки объектов ---
         object_buttons = accordion.locator("button.accordion-item.clickable")
         num_objects = await object_buttons.count()
         all_objects_info = []
@@ -80,8 +57,9 @@ async def parse_cadastral(cad_number: str):
             button = object_buttons.nth(i)
             await button.scroll_into_view_if_needed()
             await button.click()
-            await page.wait_for_timeout(2000)
+            await page.wait_for_timeout(2000)  # ждём рендер
 
+            # --- парсинг всех info-container внутри всех m-parameter-generator ---
             param_gen = page.locator("#attribute-slot m-parameter-generator")
             param_count = await param_gen.count()
 
@@ -102,6 +80,7 @@ async def parse_cadastral(cad_number: str):
 
                     if await header_elem.count() > 0:
                         header_text = await header_elem.get_attribute("text")
+
                     if await value_elem_string.count() > 0:
                         value_text = await value_elem_string.get_attribute("text")
                     elif await value_elem_typography.count() > 0:
@@ -111,13 +90,14 @@ async def parse_cadastral(cad_number: str):
 
                 all_objects_info.append(parsed_info)
 
-        # --- уменьшение масштаба карты ---
+        # --- уменьшение масштаба карты 3 раза ---
         zoom_out_button = page.locator(
             'm-tooltip[content="Уменьшить масштаб карты"] m-button'
         ).first
+
         for _ in range(3):
             await zoom_out_button.click()
-            await page.wait_for_timeout(500)
+            await page.wait_for_timeout(500)  # ждём анимацию
 
         # --- скрин карты ---
         await page.wait_for_timeout(1500)
