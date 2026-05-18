@@ -1,6 +1,7 @@
 import asyncio
 import json
 from playwright.async_api import async_playwright
+import os
 
 URL = (
     "https://nspd.gov.ru/map"
@@ -14,6 +15,10 @@ URL = (
     "&active_layers=36048"
 )
 
+# Папка для дебаг-скринов и HTML
+DEBUG_DIR = "debug_outputs"
+os.makedirs(DEBUG_DIR, exist_ok=True)
+
 
 async def parse_cadastral(cad_number: str):
     async with async_playwright() as p:
@@ -25,7 +30,14 @@ async def parse_cadastral(cad_number: str):
         )
         page = await context.new_page()
 
+        # --- загрузка страницы ---
         await page.goto(URL, wait_until="networkidle", timeout=120000)
+
+        # --- дебаг: скрин страницы после загрузки ---
+        await page.screenshot(path=os.path.join(DEBUG_DIR, f"page_load_{cad_number.replace(':','_')}.png"), full_page=True)
+        html_content = await page.evaluate("() => document.body.innerHTML")
+        with open(os.path.join(DEBUG_DIR, f"page_load_{cad_number.replace(':','_')}.html"), "w", encoding="utf-8") as f:
+            f.write(html_content)
 
         # --- поиск кадастра ---
         input_field = page.locator("label.input-label input")
@@ -33,6 +45,12 @@ async def parse_cadastral(cad_number: str):
         await input_field.click()
         await input_field.fill(cad_number)
         await page.keyboard.press("Enter")
+
+        # --- дебаг: скрин после ввода ---
+        await page.screenshot(path=os.path.join(DEBUG_DIR, f"after_input_{cad_number.replace(':','_')}.png"), full_page=True)
+        html_content = await page.evaluate("() => document.body.innerHTML")
+        with open(os.path.join(DEBUG_DIR, f"after_input_{cad_number.replace(':','_')}.html"), "w", encoding="utf-8") as f:
+            f.write(html_content)
 
         # клик по suggestion, если есть
         try:
@@ -99,9 +117,8 @@ async def parse_cadastral(cad_number: str):
             await zoom_out_button.click()
             await page.wait_for_timeout(500)  # ждём анимацию
 
-        # --- скрин карты ---
-        await page.wait_for_timeout(1500)
-        screenshot_path = f"map_screenshot_{cad_number.replace(':','_')}.png"
+        # --- финальный скрин карты ---
+        screenshot_path = os.path.join(DEBUG_DIR, f"map_screenshot_{cad_number.replace(':','_')}.png")
         await page.screenshot(path=screenshot_path, full_page=True)
 
         result = {
