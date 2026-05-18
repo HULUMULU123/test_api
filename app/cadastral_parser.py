@@ -26,9 +26,8 @@ async def parse_cadastral(cad_number: str):
                 "--disable-software-rasterizer",
                 "--disable-gpu"
             ],
-            ignore_https_errors=True
         )
-        context = await browser.new_context(viewport={"width": 1600, "height": 900})
+        context = await browser.new_context(viewport={"width": 1600, "height": 900}, ignore_https_errors=True)
         page = await context.new_page()
 
         await page.goto(URL, wait_until="networkidle", timeout=120000)
